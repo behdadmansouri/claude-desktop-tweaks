@@ -1,0 +1,11 @@
+# Backups created by the install scripts
+*.bak
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Temp work dirs (shouldn't be here, but just in case)
+/tmp/
