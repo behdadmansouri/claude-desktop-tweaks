@@ -44,6 +44,9 @@
       '#__next,#__next>div,#root,#root>div{padding-top:0!important}',
       // ── Top bar: nuke it with CSS so React re-renders can't bring it back
       '[data-top-left="true"]{display:none!important;height:0!important;overflow:hidden!important}',
+      // ── dframe layout: kill leftover padding-top, fix sidebar height
+      '#dframe-main,.dframe-content{padding-top:0!important;margin-top:0!important}',
+      '.dframe-sidebar{min-height:100%!important;align-self:stretch!important;height:auto!important}',
       // ── Hide the "Views" toggle button on the right side of the toolbar
       // (we replace it with Ctrl+Shift+R)
       'button[data-testid="views-button"],'  +
@@ -69,11 +72,19 @@
     document.querySelectorAll('[role="dialog"],[role="alertdialog"]').forEach(d => {
       if (_seenDialogs.has(d)) return;
       _seenDialogs.add(d);
-      // Only auto-dismiss dialogs that appeared in the first 15 seconds
-      // and have exactly one primary action (i.e. a simple "OK / Got it" popup)
       const btns = [...d.querySelectorAll('button')].filter(b => b.offsetParent !== null);
-      if (btns.length !== 1) return; // multi-button = user decision needed, skip
-      const lbl = (btns[0].textContent || '').toLowerCase().trim();
+
+      // ── "Attach debugger?" Electron prompt — Cancel it automatically
+      const labels = btns.map(b => (b.textContent || '').toLowerCase().trim());
+      if (labels.includes('attach') && labels.includes('cancel')) {
+        const cancelBtn = btns.find(b => (b.textContent || '').toLowerCase().trim() === 'cancel');
+        setTimeout(() => { if (document.contains(cancelBtn)) cancelBtn.click(); }, 200);
+        return;
+      }
+
+      // ── Single-button "OK / Got it" popups — auto-accept
+      if (btns.length !== 1) return;
+      const lbl = labels[0];
       const autoDismiss = ['ok','got it','dismiss','continue','close','done','accept']
         .some(w => lbl.includes(w));
       if (autoDismiss) {
