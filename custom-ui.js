@@ -64,7 +64,33 @@
   }
 
   // ─────────────────────────────────────────────────────────────
-  //  0b. STARTUP POPUP DISMISSER
+  //  0b. "MODEL UNAVAILABLE" BANNER HIDER
+  // ─────────────────────────────────────────────────────────────
+  function hideUnavailableBanners() {
+    // Walk all text nodes looking for "X is currently unavailable"
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (/is currently unavailable/i.test(node.nodeValue)) {
+        // Walk up to find the nearest block-level container to hide
+        let el = node.parentElement;
+        for (let i = 0; i < 8 && el && el !== document.body; i++) {
+          const tag = el.tagName;
+          const r = el.getBoundingClientRect();
+          // Stop at something that looks like a banner/alert row
+          if ((tag === 'DIV' || tag === 'ASIDE' || tag === 'SECTION' || tag === 'HEADER') &&
+              r.width > window.innerWidth * 0.3) {
+            el.style.setProperty('display', 'none', 'important');
+            break;
+          }
+          el = el.parentElement;
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  0c. STARTUP POPUP DISMISSER
   // ─────────────────────────────────────────────────────────────
   const _seenDialogs = new WeakSet();
 
@@ -741,6 +767,7 @@
     applyRings();
     scanForUsageExtras();
     hideTopBar();
+    hideUnavailableBanners();
     dismissStartupPopups();
     preferCodeTab();
     injectRightPanelTabs(findRightPanel());
