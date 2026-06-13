@@ -40,11 +40,168 @@
     // or WCO JS hooks. Two layers: top of tree + deepest flex wrappers.
     s.textContent = [
       'html,body{padding-top:0!important;margin-top:0!important}',
-      // Claude.ai wraps content in a div that gets padding-top from WCO
       'body>div,body>div>div{padding-top:0!important}',
       '#__next,#__next>div,#root,#root>div{padding-top:0!important}',
+      // ── Top bar: nuke it with CSS so React re-renders can't bring it back
+      '[data-top-left="true"]{display:none!important;height:0!important;overflow:hidden!important}',
+      // ── Hide the "Views" toggle button on the right side of the toolbar
+      // (we replace it with Ctrl+Shift+R)
+      'button[data-testid="views-button"],'  +
+      'button[aria-label="Views"],'          +
+      'button[aria-label*="Toggle right"],'  +
+      'button[aria-label*="right panel" i],' +
+      '[data-testid="right-panel-toggle"]'   +
+      '{display:none!important}',
+      // ── Right panel tab bar injected by us
+      '.cc-rp-tabs{display:flex;gap:2px;padding:4px 8px;border-bottom:1px solid var(--claude-border,rgba(0,0,0,.1));background:var(--bg-100,#f5f4ef);}',
+      '.cc-rp-tab{padding:3px 10px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;border:0;background:transparent;color:inherit;opacity:.6;}',
+      '.cc-rp-tab.active{background:var(--bg-200,rgba(0,0,0,.07));opacity:1;}',
     ].join('\n');
     document.head.appendChild(s);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  0b. STARTUP POPUP DISMISSER
+  // ─────────────────────────────────────────────────────────────
+  const _seenDialogs = new WeakSet();
+
+  function dismissStartupPopups() {
+    document.querySelectorAll('[role="dialog"],[role="alertdialog"]').forEach(d => {
+      if (_seenDialogs.has(d)) return;
+      _seenDialogs.add(d);
+      // Only auto-dismiss dialogs that appeared in the first 15 seconds
+      // and have exactly one primary action (i.e. a simple "OK / Got it" popup)
+      const btns = [...d.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+      if (btns.length !== 1) return; // multi-button = user decision needed, skip
+      const lbl = (btns[0].textContent || '').toLowerCase().trim();
+      const autoDismiss = ['ok','got it','dismiss','continue','close','done','accept']
+        .some(w => lbl.includes(w));
+      if (autoDismiss) {
+        setTimeout(() => { if (document.contains(btns[0])) btns[0].click(); }, 300);
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  0c. DEFAULT TO "CODE" TAB IN ARTIFACT PANEL
+  // ─────────────────────────────────────────────────────────────
+  function preferCodeTab() {
+    document.querySelectorAll('[role="tablist"]').forEach(tl => {
+      if (tl.dataset.ccTabPref) return;
+      const tabs = [...tl.querySelectorAll('[role="tab"]')];
+      const codeTab = tabs.find(t => /^code$/i.test(t.textContent.trim()));
+      if (!codeTab) return;
+      tl.dataset.ccTabPref = '1';
+      if (codeTab.getAttribute('aria-selected') !== 'true') {
+        setTimeout(() => { if (document.contains(codeTab)) codeTab.click(); }, 80);
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  0d. RIGHT PANEL — Ctrl+Shift+R toggle + Obsidian-style tabs
+  // ─────────────────────────────────────────────────────────────
+  const RP_TABS = ['Preview', 'Code', 'Files'];
+  let _rpActiveTab = 'Code'; // default shown tab
+
+  function findRightPanelToggle() {
+    return document.querySelector(
+      'button[data-testid="views-button"],'         +
+      'button[aria-label="Views"],'                 +
+      'button[aria-label*="Toggle right" i],'       +
+      'button[aria-label*="artifact" i][aria-pressed],' +
+      'button[aria-label*="right panel" i],'        +
+      '[data-testid="right-panel-toggle"] button'
+    );
+  }
+
+  function findRightPanel() {
+    // Common candidates for the artifact / right panel container
+    return (
+      document.querySelector('[data-testid="artifact-panel"]') ||
+      document.querySelector('[data-testid="right-panel"]')    ||
+      // Fallback: a panel on the far right that's not the sidebar
+      [...document.querySelectorAll('aside,section,[role="complementary"]')]
+        .find(el => {
+          const r = el.getBoundingClientRect();
+          return r.right >= window.innerWidth - 20 && r.width > 200 && r.width < window.innerWidth * 0.6;
+        }) ||
+      null
+    );
+  }
+
+  function injectRightPanelTabs(panel) {
+    if (!panel || panel.dataset.ccRpTabs) return;
+    panel.dataset.ccRpTabs = '1';
+
+    const bar = document.createElement('div');
+    bar.className = 'cc-rp-tabs';
+
+    RP_TABS.forEach(name => {
+      const btn = document.createElement('button');
+      btn.className = 'cc-rp-tab' + (name === _rpActiveTab ? ' active' : '');
+      btn.textContent = name;
+      btn.onclick = () => {
+        _rpActiveTab = name;
+        bar.querySelectorAll('.cc-rp-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        switchRightPanelTab(panel, name);
+      };
+      bar.appendChild(btn);
+    });
+
+    panel.insertBefore(bar, panel.firstChild);
+    switchRightPanelTab(panel, _rpActiveTab);
+  }
+
+  function switchRightPanelTab(panel, name) {
+    // "Preview" and "Code" — click the matching native tab if it exists
+    if (name === 'Preview' || name === 'Code') {
+      const native = [...panel.querySelectorAll('[role="tab"]')]
+        .find(t => t.textContent.trim().toLowerCase() === name.toLowerCase());
+      if (native && native.getAttribute('aria-selected') !== 'true') native.click();
+      // Make sure Files overlay is hidden
+      const overlay = panel.querySelector('.cc-rp-files');
+      if (overlay) overlay.style.display = 'none';
+    }
+
+    if (name === 'Files') {
+      // Lazy-create a file list overlay inside the panel
+      let overlay = panel.querySelector('.cc-rp-files');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'cc-rp-files';
+        overlay.style.cssText = 'position:absolute;inset:0;background:var(--bg-100,#f5f4ef);' +
+          'overflow-y:auto;padding:10px 12px;font-size:12px;font-family:inherit;z-index:5;';
+        panel.style.position = 'relative';
+        panel.appendChild(overlay);
+      }
+      const ws = loadWS();
+      if (!ws.length) {
+        overlay.innerHTML = '<div style="opacity:.4;padding:8px">No recent workspaces yet.<br>Open a folder to populate this list.</div>';
+      } else {
+        overlay.innerHTML = '';
+        let lastConn = null;
+        ws.forEach(({conn, folder}) => {
+          if (conn !== lastConn) {
+            lastConn = conn;
+            const hdr = document.createElement('div');
+            hdr.style.cssText = 'font-size:10px;font-weight:600;opacity:.5;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;';
+            hdr.textContent = conn;
+            overlay.appendChild(hdr);
+          }
+          const name = folder.split('/').filter(Boolean).pop() || folder;
+          const row = document.createElement('div');
+          row.style.cssText = 'padding:3px 4px;border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          row.title = folder;
+          row.textContent = name;
+          row.onmouseenter = () => row.style.background = 'rgba(0,0,0,.07)';
+          row.onmouseleave = () => row.style.background = '';
+          overlay.appendChild(row);
+        });
+      }
+      overlay.style.display = '';
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -508,6 +665,21 @@
       }
     }
 
+    // Ctrl+Shift+R → toggle right panel
+    if (e.ctrlKey && e.shiftKey && (e.key === 'R' || e.key === 'r')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const btn = findRightPanelToggle();
+      if (btn) { btn.click(); return; }
+      // Fallback: look for any panel-toggle on the right edge of the toolbar
+      const toolbarBtns = [...document.querySelectorAll('header button, [role="toolbar"] button')]
+        .filter(b => {
+          const r = b.getBoundingClientRect();
+          return r.right >= window.innerWidth * 0.6 && r.width > 0;
+        });
+      if (toolbarBtns.length) toolbarBtns[toolbarBtns.length - 1].click();
+    }
+
     // Ctrl+Shift+L → toggle sidebar
     if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
       e.preventDefault();
@@ -558,6 +730,9 @@
     applyRings();
     scanForUsageExtras();
     hideTopBar();
+    dismissStartupPopups();
+    preferCodeTab();
+    injectRightPanelTabs(findRightPanel());
 
     if (location.pathname !== lastPath) {
       lastPath = location.pathname;
