@@ -1,14 +1,22 @@
 /**
- * Claude Desktop custom UI — v6
+ * Claude Desktop custom UI — v8
  *
  * Features:
  *  1. Text usage badges:  C35%  H81%  2h  W45%  3d
  *     C=blue(context)  H=yellow(hourly)  2h=white(hrs to reset)
  *     W=green(weekly)  3d=white(days to reset)
- *  2. Quick workspace panel — two columns LOCAL | MYSERVER
+ *  2. Quick workspace panel — two columns LOCAL | MYSERVER (hover-triggered)
+ *     Hovering a Local folder previews its TODO.md (baked at build time)
  *  3. Prompt-cache freshness ring on sidebar conversation titles
+ *     amber outline + tinted bg; outline is not clipped by overflow:hidden
  *  4. Top bar hidden; WCO height overridden to 0 to reclaim the space
  *     Ctrl+O = search    Ctrl+Shift+L = toggle sidebar
+ *     Ctrl+1/2/3 = Chat / Cowork / Code
+ *     Ctrl+Shift+R = toggle right panel
+ *     Ctrl+W = close file viewer / preview overlay (repurposed; native Ctrl+W = redundant new session)
+ *     Alt+1-9 = jump to Nth chat in sidebar
+ *  5. Chat number badges (1-9) on first 9 sidebar chats
+ *  6. New-session page overview/activity section hidden (not useful)
  *
  * Security notes
  *  - No innerHTML injection from untrusted data; all user-sourced text
@@ -59,6 +67,20 @@
       '.cc-rp-tabs{display:flex;gap:2px;padding:4px 8px;border-bottom:1px solid var(--claude-border,rgba(0,0,0,.1));background:var(--bg-100,#f5f4ef);}',
       '.cc-rp-tab{padding:3px 10px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;border:0;background:transparent;color:inherit;opacity:.6;}',
       '.cc-rp-tab.active{background:var(--bg-200,rgba(0,0,0,.07));opacity:1;}',
+      // ── Cache ring: inline styles applied directly in applyRings() — outline is not clipped by overflow:hidden
+      // ── Pin feature
+      'a[data-cc-pinned]{outline:2px solid #f59e0b!important;outline-offset:-2px!important;border-radius:6px!important;}',
+      '.cc-pin-host{position:relative!important;}',
+      '.cc-pin-btn{display:none;position:absolute;right:3px;top:50%;transform:translateY(-50%);' +
+        'background:none;border:0;cursor:pointer;font-size:11px;opacity:.45;z-index:10;padding:2px 4px;line-height:1;}',
+      '.cc-pin-host:hover .cc-pin-btn,.cc-pin-btn[data-pinned]{display:inline-block!important;}',
+      '.cc-pin-btn[data-pinned]{opacity:.8;color:#f59e0b;}',
+      '.cc-pin-btn:hover{opacity:1!important;}',
+      // ── Workspace panel: dark-mode override (inline styles can't use prefers-color-scheme)
+      '@media (prefers-color-scheme:dark){' +
+        '.cc-ws-panel{background:#28261f!important;border-color:rgba(255,255,255,.12)!important;}' +
+        '.cc-ws-panel button{color:inherit!important;}' +
+      '}',
     ].join('\n');
     document.head.appendChild(s);
   }
@@ -66,27 +88,21 @@
   // ─────────────────────────────────────────────────────────────
   //  0b. "MODEL UNAVAILABLE" BANNER HIDER
   // ─────────────────────────────────────────────────────────────
+  // Tracks already-hidden banners so we don't re-check them on every scan.
+  const _hiddenBanners = new WeakSet();
+
   function hideUnavailableBanners() {
-    // Walk all text nodes looking for "X is currently unavailable"
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (/is currently unavailable/i.test(node.nodeValue)) {
-        // Walk up to find the nearest block-level container to hide
-        let el = node.parentElement;
-        for (let i = 0; i < 8 && el && el !== document.body; i++) {
-          const tag = el.tagName;
-          const r = el.getBoundingClientRect();
-          // Stop at something that looks like a banner/alert row
-          if ((tag === 'DIV' || tag === 'ASIDE' || tag === 'SECTION' || tag === 'HEADER') &&
-              r.width > window.innerWidth * 0.3) {
-            el.style.setProperty('display', 'none', 'important');
-            break;
-          }
-          el = el.parentElement;
-        }
+    // Query likely notification containers — far cheaper than a full TreeWalker.
+    // Never hide anything taller than 15% of the viewport — that's page content.
+    document.querySelectorAll('[role="alert"],[role="status"],[role="banner"],[aria-live]').forEach(el => {
+      if (_hiddenBanners.has(el)) return;
+      if (!/is currently unavailable/i.test(el.textContent)) return;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.height < window.innerHeight * 0.15 && r.width > window.innerWidth * 0.3) {
+        _hiddenBanners.add(el);
+        el.style.setProperty('display', 'none', 'important');
       }
-    }
+    });
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -95,18 +111,23 @@
   const _seenDialogs = new WeakSet();
 
   function dismissStartupPopups() {
+    // ── "Attach X to this session?" — search by button text, regardless of dialog role
+    if (!_seenDialogs._attachDismissed) {
+      const allBtns = [...document.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+      const cancelBtn = allBtns.find(b => (b.textContent || '').toLowerCase().trim() === 'cancel');
+      const attachBtn = allBtns.find(b => (b.textContent || '').toLowerCase().trim() === 'attach');
+      if (cancelBtn && attachBtn) {
+        _seenDialogs._attachDismissed = true;
+        setTimeout(() => { if (document.contains(cancelBtn)) cancelBtn.click(); }, 200);
+      }
+    }
+
+    // ── role="dialog" / role="alertdialog" popups
     document.querySelectorAll('[role="dialog"],[role="alertdialog"]').forEach(d => {
       if (_seenDialogs.has(d)) return;
       _seenDialogs.add(d);
       const btns = [...d.querySelectorAll('button')].filter(b => b.offsetParent !== null);
-
-      // ── "Attach debugger?" Electron prompt — Cancel it automatically
       const labels = btns.map(b => (b.textContent || '').toLowerCase().trim());
-      if (labels.includes('attach') && labels.includes('cancel')) {
-        const cancelBtn = btns.find(b => (b.textContent || '').toLowerCase().trim() === 'cancel');
-        setTimeout(() => { if (document.contains(cancelBtn)) cancelBtn.click(); }, 200);
-        return;
-      }
 
       // ── Single-button "OK / Got it" popups — auto-accept
       if (btns.length !== 1) return;
@@ -120,7 +141,46 @@
   }
 
   // ─────────────────────────────────────────────────────────────
-  //  0c. DEFAULT TO "CODE" TAB IN ARTIFACT PANEL
+  //  0d. NEW-SESSION OVERVIEW HIDER
+  //  The home page shows an "activity overview" section (git-like
+  //  heatmap / usage stats) that obscures the workspace panel.
+  //  Hide it on all non-chat pages; it can be re-shown by setting
+  //  localStorage.ccShowOverview = '1'.
+  // ─────────────────────────────────────────────────────────────
+  function hideNewSessionOverview() {
+    if (location.pathname.includes('/chat/')) return;
+    if (localStorage.getItem('ccShowOverview') === '1') return;
+
+    // Selectors that match overview/activity/stats blocks
+    const OV_SEL = [
+      '[data-testid*="overview" i]',
+      '[data-testid*="activity" i]',
+      '[data-testid*="stats" i]',
+      '[data-testid*="chart" i]',
+      '[aria-label*="activity" i]',
+      '[aria-label*="overview" i]',
+      'canvas',
+    ].join(',');
+
+    document.querySelectorAll(OV_SEL).forEach(el => {
+      if (el.dataset.ccOvHidden) return;
+      // Walk up to a container that can be hidden without touching the workspace row or inputs
+      let target = el;
+      for (let i = 0; i < 6; i++) {
+        const p = target.parentElement;
+        if (!p || p === document.body || p === document.documentElement) break;
+        if (p.querySelector('button[aria-haspopup="menu"],textarea,input[type="text"]')) break;
+        const r = p.getBoundingClientRect();
+        if (r.height > window.innerHeight * 0.5) break;
+        target = p;
+      }
+      target.dataset.ccOvHidden = '1';
+      target.style.setProperty('display', 'none', 'important');
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  0e. DEFAULT TO "CODE" TAB IN ARTIFACT PANEL
   // ─────────────────────────────────────────────────────────────
   function preferCodeTab() {
     document.querySelectorAll('[role="tablist"]').forEach(tl => {
@@ -227,7 +287,7 @@
             hdr.textContent = conn;
             overlay.appendChild(hdr);
           }
-          const name = folder.split('/').filter(Boolean).pop() || folder;
+          const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
           const row = document.createElement('div');
           row.style.cssText = 'padding:3px 4px;border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
           row.title = folder;
@@ -242,51 +302,75 @@
   }
 
   // ─────────────────────────────────────────────────────────────
-  //  1.  USAGE BADGES   C35%  H81%  2h  W45%  3d
+  //  1.  USAGE BADGES   C35%  H5%  2h  W44%  3d
   // ─────────────────────────────────────────────────────────────
-  let _weeklyPct  = null;  // weekly %
-  let _hourlyResetH = null; // hours until hourly plan resets
-  let _weeklyResetD = null; // days until weekly usage resets
-  const _badgeRebuild = new WeakMap(); // btn → rebuild fn
+  //
+  // Data sources:
+  //   ctx, plan  ← button aria-label ("Usage: context X%, plan Y%")
+  //               'plan' = weekly plan usage in current Claude Desktop
+  //   _hourlyPct, _weeklyPct, _hourlyResetMs, _weeklyResetMs ← popup scan (persisted)
+  //
+  let _ctxPct          = null;   // context window % (from usage button)
+  let _weeklyPct       = null;   // weekly plan % (from popup)
+  let _hourlyPct       = null;   // 5-hour plan % (from popup)
+  let _hourlyResetMs   = null;   // absolute ms timestamp of next hourly reset
+  let _weeklyResetMs   = null;   // absolute ms timestamp of next weekly reset
+  const _badgeRebuild  = new WeakMap(); // btn → rebuild fn
 
-  // Colored-letter percentage badge: C35%  H81%  W45%
+  // Derive display values live from stored timestamps so they age correctly.
+  function hoursUntil(ms) { return ms && ms > Date.now() ? Math.ceil((ms - Date.now()) / 3600000) : null; }
+  function daysUntil(ms)  { return ms && ms > Date.now() ? Math.ceil((ms - Date.now()) / 86400000) : null; }
+
+  const RESET_STORE = 'cc-reset-v1';
+  function saveResetTimes() {
+    try {
+      localStorage.setItem(RESET_STORE, JSON.stringify({
+        hourly: _hourlyResetMs, weekly: _weeklyResetMs
+      }));
+    } catch(e) {}
+  }
+  function loadResetTimes() {
+    try {
+      const d = JSON.parse(localStorage.getItem(RESET_STORE) || '{}');
+      const now = Date.now();
+      if (d.hourly && d.hourly > now) _hourlyResetMs = d.hourly;
+      if (d.weekly && d.weekly > now) _weeklyResetMs = d.weekly;
+    } catch(e) {}
+  }
+
+  // Colored-letter badge: C35%  H5%  W44%
   function pctBadge(letter, pct, color, title) {
     const dim = pct == null;
-    return `<span title="${title}${!dim ? ': ' + pct + '%' : ''}" ` +
-      `style="opacity:${dim ? 0.35 : 1};font-size:10px;font-weight:600;` +
+    return `<span title="${title}${dim ? '' : ': ' + pct + '%'}"` +
+      ` style="opacity:${dim ? 0.35 : 1};font-size:10px;font-weight:600;` +
       `white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:-0.01em;">` +
       `<span style="color:${color}">${letter}${dim ? '--' : pct}%</span></span>`;
   }
 
-  // Time-remaining badge in muted white: 2h  3d
+  // Time-remaining badge: 2h  3d — omitted entirely when unknown
   function timeBadge(val, unit, title) {
-    const dim = val == null;
-    return `<span title="${title}${!dim ? ': ' + val + unit : ''}" ` +
-      `style="opacity:${dim ? 0.25 : 0.6};font-size:10px;font-weight:500;` +
+    if (val == null) return '';
+    return `<span title="${title}: ${val}${unit}"` +
+      ` style="opacity:0.6;font-size:10px;font-weight:500;` +
       `white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:-0.01em;">` +
-      `${dim ? '--' : val}${unit}</span>`;
+      `${val}${unit}</span>`;
   }
 
+  // Parse the button's aria-label — pure, no side-effects
   function parseUsage(label) {
     const get = re => { const m = label.match(re); return m ? +m[1] : null; };
-    // Also pull reset times out of the aria-label if present
-    const h = label.match(/resets?\s+(\d+)h/i);
-    const d = label.match(/resets?\s+(\d+)d/i);
-    if (h) updateHourlyReset(+h[1]);
-    if (d) updateWeeklyReset(+d[1]);
     return {
-      ctx:    get(/context (\d+)%/),
-      plan:   get(/plan (\d+)%/),
-      weekly: get(/weekly (\d+)%/),
+      ctx:  get(/context\s+(\d+)%/i),
+      plan: get(/plan\s+(\d+)%/i),   // = weekly plan in current Claude Desktop
     };
   }
 
-  function buildBadges(ctx, plan, weekly) {
-    return pctBadge('C', ctx,                   '#3b82f6', 'Context window') +
-           pctBadge('H', plan,                  '#f59e0b', 'Hourly plan')    +
-           timeBadge(_hourlyResetH, 'h', 'Hours until hourly plan resets')   +
-           pctBadge('W', weekly ?? _weeklyPct,  '#22c55e', 'Weekly usage')   +
-           timeBadge(_weeklyResetD, 'd', 'Days until weekly usage resets');
+  function buildBadges(ctx, plan) {
+    return pctBadge('C', ctx,                '#3b82f6', 'Context window') +
+           pctBadge('H', _hourlyPct,         '#f59e0b', '5-hour plan')    +
+           timeBadge(hoursUntil(_hourlyResetMs), 'h', 'Resets in')        +
+           pctBadge('W', _weeklyPct ?? plan, '#22c55e', 'Weekly plan')    +
+           timeBadge(daysUntil(_weeklyResetMs),  'd', 'Resets in');
   }
 
   function applyBadges(btn) {
@@ -297,8 +381,9 @@
     const wrap = document.createElement('span');
     wrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center;';
     const rebuild = lbl => {
-      const {ctx, plan, weekly} = parseUsage(lbl);
-      wrap.innerHTML = buildBadges(ctx, plan, weekly);
+      const {ctx, plan} = parseUsage(lbl);
+      if (ctx != null) _ctxPct = ctx;        // make ctx globally available
+      wrap.innerHTML = buildBadges(ctx, plan);
     };
     rebuild(btn.getAttribute('aria-label') || '');
     orig.replaceWith(wrap);
@@ -312,41 +397,105 @@
       const fn = _badgeRebuild.get(btn);
       if (fn) fn(btn.getAttribute('aria-label') || '');
     });
+    updateFloatingBar();
   }
 
-  function updateWeeklyBadges(pct)   { if (_weeklyPct     !== pct) { _weeklyPct     = pct; refreshBadges(); } }
-  function updateHourlyReset(h)      { if (_hourlyResetH  !== h)   { _hourlyResetH  = h;   refreshBadges(); } }
-  function updateWeeklyReset(d)      { if (_weeklyResetD  !== d)   { _weeklyResetD  = d;   refreshBadges(); } }
+  // Setters — only re-render when value actually changes
+  function setWeeklyPct(v)      { if (_weeklyPct    !== v) { _weeklyPct    = v; refreshBadges(); } }
+  function setHourlyPct(v)      { if (_hourlyPct    !== v) { _hourlyPct    = v; refreshBadges(); } }
+  function setHourlyReset(ms)   { if (_hourlyResetMs !== ms) { _hourlyResetMs = ms; saveResetTimes(); refreshBadges(); } }
+  function setWeeklyReset(ms)   { if (_weeklyResetMs !== ms) { _weeklyResetMs = ms; saveResetTimes(); refreshBadges(); } }
 
+  // Parse "Resets Wed 1:39 AM" / "Resets Today 9:59 AM" → absolute ms timestamp.
+  function resetTimestamp(str) {
+    const m = str.match(/Resets?\s+(\w+)\s+(\d+):(\d+)\s*(AM|PM)/i);
+    if (!m) return null;
+    const [, dayStr, hStr, minStr, ampm] = m;
+    let h = +hStr, min = +minStr;
+    if (ampm.toUpperCase() === 'PM' && h !== 12) h += 12;
+    if (ampm.toUpperCase() === 'AM' && h === 12) h = 0;
+
+    const now    = new Date();
+    const target = new Date(now);
+    target.setHours(h, min, 0, 0);
+
+    const dl = dayStr.toLowerCase();
+    if (dl === 'today') {
+      if (target <= now) target.setDate(target.getDate() + 1);
+    } else if (dl === 'tomorrow') {
+      target.setDate(target.getDate() + 1);
+    } else {
+      const DOW = ['sun','mon','tue','wed','thu','fri','sat'];
+      const td = DOW.findIndex(d => dl.startsWith(d));
+      if (td === -1) return null;
+      let ahead = td - now.getDay();
+      if (ahead < 0 || (ahead === 0 && target <= now)) ahead += 7;
+      target.setDate(now.getDate() + ahead);
+    }
+
+    return target.getTime();
+  }
+
+  // Scan popup/dialog elements for usage data not available in the aria-label.
+  // Uses document.body.innerText (visible text only) so it catches any popup
+  // regardless of Radix/DOM nesting — no selector guessing needed.
+  //
+  // Popup format (as of current Claude Desktop):
+  //   Context window
+  //   56.4k / 200.0k (28%)
+  //   Plan usage
+  //   5-hour limit
+  //   Resets Wed 1:39 AM
+  //   6%
+  //   Weekly · all models
+  //   Resets Wed 9:59 AM
+  //   83%
   function scanForUsageExtras() {
-    // Scan popups/dialogs for weekly % and reset times
-    document.querySelectorAll('[role="dialog"],[role="tooltip"],[role="status"],[aria-live]').forEach(el => {
-      const text = el.innerText || '';
-      if (!text.trim()) return;
+    // Only worth scanning when a popup/overlay is visibly open
+    const hasPopup = !!document.querySelector(
+      '[data-state="open"],[role="dialog"],[role="tooltip"],[data-radix-popper-content-wrapper]'
+    );
+    if (!hasPopup) return;
 
-      const wPct = text.match(/(\d+)%\s*(?:of\s+)?weekly/i) || text.match(/weekly[^0-9]*(\d+)%/i);
-      if (wPct) updateWeeklyBadges(+wPct[1]);
+    // innerText respects CSS visibility — hidden/closed popups are excluded
+    const t = document.body.innerText || '';
+    if (!t.includes('5-hour') && !t.includes('5 hour') && !t.includes('Weekly')) return;
 
-      const hReset = text.match(/resets?\s+in\s+(\d+)\s*h/i)   ||
-                     text.match(/(\d+)\s*h(?:ours?)?\s*(?:remaining|left|until)/i) ||
-                     text.match(/plan\s+resets?\s+in\s+(\d+)/i);
-      if (hReset) updateHourlyReset(+hReset[1]);
+    // 5-hour %  — first \d+% that follows "5-hour" within 200 chars
+    const h5Pct = t.match(/5.hour[^]{0,200}?(\d+)%/i);
+    if (h5Pct) setHourlyPct(+h5Pct[1]);
 
-      const dReset = text.match(/resets?\s+in\s+(\d+)\s*d/i)  ||
-                     text.match(/(\d+)\s*d(?:ays?)?\s*(?:remaining|left|until)/i);
-      if (dReset) updateWeeklyReset(+dReset[1]);
-    });
+    // Weekly %  — first \d+% that follows "weekly" within 200 chars
+    const wkPct = t.match(/week(?:ly)?[^]{0,200}?(\d+)%/i);
+    if (wkPct) setWeeklyPct(+wkPct[1]);
 
-    // Scan visible footnote spans like "56% · resets 1h" or "resets 2d"
-    document.querySelectorAll('.text-t6,.text-footnote').forEach(el => {
-      const t = el.textContent || '';
-      const hm = t.match(/resets?\s+(\d+)h/i);
-      if (hm) updateHourlyReset(+hm[1]);
-      const dm = t.match(/resets?\s+(\d+)d/i);
-      if (dm) updateWeeklyReset(+dm[1]);
-      const wPct = t.match(/(\d+)%\s*(?:of\s+)?weekly/i) || t.match(/weekly[^0-9]*(\d+)%/i);
-      if (wPct) updateWeeklyBadges(+wPct[1]);
-    });
+    // 5-hour reset — "Resets <day> <time>" that follows "5-hour" within 200 chars
+    const h5Rst = t.match(/5.hour[^]{0,200}?(Resets?\s+\w+\s+\d+:\d+\s*(?:AM|PM))/i);
+    if (h5Rst) {
+      const ms = resetTimestamp(h5Rst[1]);
+      if (ms) setHourlyReset(ms);
+    }
+
+    // Weekly reset — "Resets <day> <time>" that follows "weekly" within 200 chars
+    const wkRst = t.match(/week(?:ly)?[^]{0,200}?(Resets?\s+\w+\s+\d+:\d+\s*(?:AM|PM))/i);
+    if (wkRst) {
+      const ms = resetTimestamp(wkRst[1]);
+      if (ms) setWeeklyReset(ms);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  1b. EMOJI SUFFIX HELPER
+  //  Folder names are stored with emoji PREFIXES (e.g. "⏱️ Time Management")
+  //  but displayed with the emoji moved to the END ("Time Management ⏱️")
+  //  so the text sorts/scans more naturally.
+  // ─────────────────────────────────────────────────────────────
+  function emojiSuffix(name) {
+    // Move any leading non-letter/non-digit chars (emoji, symbols, spaces) to the end.
+    // Unicode property escapes: \p{L}=letter, \p{N}=number (requires 'u' flag).
+    const m = name.match(/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su);
+    if (!m) return name;          // all emoji / no text — leave untouched
+    return m[2].trimEnd() + ' ' + m[1].trim();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -354,6 +503,9 @@
   // ─────────────────────────────────────────────────────────────
   const WS_KEY    = 'cc-ws-v4';
   const PANEL_CLS = 'cc-ws-panel';
+
+  // Build-time snapshot of each folder's TODO.md, keyed by full path (see update-ui.sh).
+  const CC_TODOS = (typeof CC_AI_TODOS !== 'undefined') ? CC_AI_TODOS : {};
 
   const loadWS = () => { try { return JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; } };
   const saveWS = list => localStorage.setItem(WS_KEY, JSON.stringify(list.slice(0, 40)));
@@ -382,20 +534,22 @@
     el.dispatchEvent(new MouseEvent  ('click',        {...base, button: 0, buttons: 0}));
   }
 
-  // Wait for a NEW [role="menu"] to appear after clicking a trigger button
+  const _MENU_SEL = '[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],' +
+    '[data-radix-select-content],[data-radix-dropdown-menu-content],[data-radix-combobox-content],' +
+    '[data-cmdk-root],[data-cmdk-list],[cmdk-list]';
+  const _ITEM_SEL = '[role="menuitem"],[role="option"],[role="radio"],[role="checkbox"],' +
+    '[data-cmdk-item],[cmdk-item],[data-radix-collection-item],li,button';
+
+  // Wait for a NEW popup/menu to appear after clicking a trigger button
   async function waitNewMenu(ms = 2500) {
-    const existing = new Set(document.querySelectorAll(
-      '[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]'
-    ));
+    const existing = new Set(document.querySelectorAll(_MENU_SEL));
     await sleep(80);
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
-      for (const m of document.querySelectorAll(
-        '[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]'
-      )) {
+      for (const m of document.querySelectorAll(_MENU_SEL)) {
         if (!existing.has(m)) {
-          const items = [...m.querySelectorAll('[role="menuitem"],[role="option"],li,button')]
-            .filter(i => i.textContent.trim() && !i.querySelector('[role="menuitem"]'));
+          const items = [...m.querySelectorAll(_ITEM_SEL)]
+            .filter(i => i.textContent.trim() && !i.querySelector('[role="menuitem"],[role="option"]'));
           if (items.length) return items;
         }
       }
@@ -406,30 +560,162 @@
 
   function matchFolder(itemText, folder) {
     const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const it = norm(itemText), f = norm(folder);
+    // Compare against the basename only, not the full path
+    const name = folder.split('/').filter(Boolean).pop() || folder;
+    const it = norm(itemText), f = norm(name);
     return it === f || it.includes(f) || f.includes(it);
   }
 
+  // Call React's own event handlers directly via the fiber tree.
+  // Bypasses isTrusted checks that block synthetic dispatchEvent clicks.
+  function tryFiberClick(el) {
+    const fiberKey = Object.keys(el).find(k => /^__reactFiber/.test(k) || /^__reactInternal/.test(k));
+    if (!fiberKey) return false;
+    let fiber = el[fiberKey];
+    for (let depth = 0; fiber && depth < 25; fiber = fiber.return, depth++) {
+      const p = fiber.memoizedProps;
+      if (!p) continue;
+      for (const handler of ['onClick', 'onPointerUp', 'onMouseUp', 'onSelect']) {
+        if (typeof p[handler] === 'function') {
+          try {
+            p[handler]({
+              type: handler.replace(/^on/, '').toLowerCase(),
+              button: 0, buttons: 0, isPrimary: true, bubbles: true,
+              preventDefault: () => {}, stopPropagation: () => {},
+              currentTarget: el, target: el,
+            });
+            console.log('[cc-ws] fiber handler fired:', handler);
+            return true;
+          } catch (e) { console.log('[cc-ws] fiber handler err:', handler, e); }
+        }
+      }
+    }
+    return false;
+  }
+
+  // Find the two workspace buttons: [connectionBtn, folderBtn]
+  function findWsBtns(wsRow) {
+    const menuBtns = [...wsRow.querySelectorAll('button[aria-haspopup="menu"]')];
+    if (menuBtns.length >= 2) return [menuBtns[0], menuBtns[1]];
+    // Fallback: connection button only — folder button may lack aria-haspopup
+    const connBtn = menuBtns[0] || null;
+    const allBtns = [...wsRow.querySelectorAll('button')];
+    const folderBtn = allBtns.find(b => b !== connBtn) || null;
+    return [connBtn, folderBtn];
+  }
+
   async function clickWorkspace(conn, folder, wsRow) {
-    if (!wsRow?.isConnected) return;
-    const [connBtn, folderBtn] = wsRow.querySelectorAll('button[aria-haspopup="menu"]');
+    console.log('[cc-ws] clickWorkspace', conn, folder);
+    if (!wsRow?.isConnected) { console.log('[cc-ws] wsRow disconnected'); return; }
+    const [connBtn, folderBtn] = findWsBtns(wsRow);
+    console.log('[cc-ws] buttons found:', !!connBtn, !!folderBtn);
     if (!connBtn || !folderBtn) return;
-    const currentConn = connBtn.querySelector('span')?.textContent?.trim() || '';
+
+    const currentConn = connBtn.querySelector('span,div')?.textContent?.trim() || '';
+    console.log('[cc-ws] currentConn:', currentConn, '→ want:', conn);
     if (currentConn !== conn) {
       fireClick(connBtn);
-      const items = await waitNewMenu();
-      const target = items.find(el => el.textContent.includes(conn));
-      if (target) { fireClick(target); await sleep(500); }
-      else { document.body.click(); return; }
+      const connItems = await waitNewMenu();
+      console.log('[cc-ws] conn menu items:', connItems.map(i => i.textContent.trim()));
+      const connTarget = connItems.find(el => el.textContent.trim().includes(conn));
+      if (!connTarget) { console.log('[cc-ws] conn target not found'); document.body.click(); return; }
+      fireClick(connTarget);
+      await sleep(600);
+      // SSH connection may trigger an env-selector dialog — auto-pick if single option
+      const dialog = [...document.querySelectorAll('[role="dialog"]')]
+        .find(d => d.offsetParent && !_seenDialogs.has(d));
+      if (dialog) {
+        const opts = [...dialog.querySelectorAll('[role="option"],li,button')]
+          .filter(el => el.textContent.trim() && el.offsetParent);
+        if (opts.length === 1) { fireClick(opts[0]); await sleep(400); }
+        else return; // Multiple SSH profiles — let user choose
+      }
     }
-    if (!wsRow.isConnected) return;
-    const [, fb] = wsRow.querySelectorAll('button[aria-haspopup="menu"]');
-    if (!fb) return;
+
+    if (!wsRow.isConnected) { console.log('[cc-ws] wsRow disconnected after conn switch'); return; }
+    const [, fb] = findWsBtns(wsRow);
+    if (!fb) { console.log('[cc-ws] folder button gone after conn switch'); return; }
+
+    console.log('[cc-ws] clicking folder button');
     fireClick(fb);
-    const items = await waitNewMenu();
-    const target = items.find(el => matchFolder(el.textContent, folder));
-    if (target) fireClick(target);
-    else document.body.click();
+    const folderItems = await waitNewMenu();
+    console.log('[cc-ws] folder menu items:', folderItems.map(i => i.textContent.trim()));
+    // Also check data-value attribute on items (Radix Select sets this)
+    const folderTarget = folderItems.find(el => {
+      const val = el.getAttribute('data-value') || el.getAttribute('value') || '';
+      if (val && matchFolder(val, folder)) return true;
+      return matchFolder(el.textContent, folder);
+    });
+    localStorage.setItem('cc-ws-debug', JSON.stringify({
+      ts: Date.now(), folder, found: !!folderTarget,
+      items: folderItems.map(i => ({t: i.textContent.trim().slice(0,30), v: i.getAttribute('data-value')||'', r: i.getAttribute('role')||''})),
+    }));
+    if (folderTarget) {
+      folderTarget.scrollIntoView({block: 'nearest'});
+      await sleep(30);
+
+      // Approach 1: React fiber handler — bypasses isTrusted restrictions
+      if (tryFiberClick(folderTarget)) { await sleep(150); return; }
+
+      // Approach 2: Keyboard navigation — Home then ArrowDown×N then Enter.
+      // Radix Select's keyboard handler lives on the listbox/document and does NOT
+      // check isTrusted for keydown, so synthetic keyboard events work where pointer
+      // events don't.
+      const targetIdx = folderItems.indexOf(folderTarget);
+      if (targetIdx >= 0) {
+        console.log('[cc-ws] keyboard nav to idx', targetIdx);
+        const el = (document.activeElement && document.activeElement !== document.body)
+          ? document.activeElement : folderTarget;
+        const kd = (key, code) =>
+          el.dispatchEvent(new KeyboardEvent('keydown', {key, code, bubbles: true, cancelable: true}));
+        kd('Home', 'Home');
+        await sleep(60);
+        for (let i = 0; i < targetIdx; i++) { kd('ArrowDown', 'ArrowDown'); await sleep(45); }
+        kd('Enter', 'Enter');
+        await sleep(150);
+        return;
+      }
+
+      // Approach 3: Synthetic pointer sequence with isPrimary (last resort)
+      console.log('[cc-ws] falling back to synthetic pointer events');
+      const r = folderTarget.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const pp = {bubbles: true, cancelable: true, clientX: cx, clientY: cy, isPrimary: true, button: 0};
+      folderTarget.dispatchEvent(new PointerEvent('pointerover',  {...pp}));
+      folderTarget.dispatchEvent(new PointerEvent('pointerenter', {...pp}));
+      await sleep(20);
+      folderTarget.dispatchEvent(new PointerEvent('pointerdown', {...pp, buttons: 1}));
+      await sleep(20);
+      folderTarget.dispatchEvent(new PointerEvent('pointerup',   {...pp, buttons: 0}));
+      folderTarget.click();
+      return;
+    }
+
+    // Keyboard fallback: type the folder basename to filter the dropdown
+    console.log('[cc-ws] no direct match, trying keyboard fallback');
+    await sleep(100);
+    const name = folder.split('/').filter(Boolean).pop() || folder;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) {
+      for (const ch of name) {
+        const ev = {key: ch, bubbles: true, cancelable: true};
+        focused.dispatchEvent(new KeyboardEvent('keydown', ev));
+        focused.dispatchEvent(new KeyboardEvent('keypress', ev));
+        if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) {
+          focused.value += ch;
+          focused.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        focused.dispatchEvent(new KeyboardEvent('keyup', ev));
+        await sleep(40);
+      }
+      await sleep(250);
+      const items2 = await waitNewMenu(800);
+      console.log('[cc-ws] keyboard fallback items:', items2.map(i => i.textContent.trim()));
+      const t2 = items2.find(el => matchFolder(el.textContent, folder));
+      if (t2) { fireClick(t2); return; }
+    }
+    console.log('[cc-ws] giving up');
+    document.body.click(); // nothing found — close the menu
   }
 
   async function browseConn(conn, wsRow) {
@@ -454,7 +740,7 @@
     b.style.cssText = 'display:block;width:100%;text-align:left;padding:3px 6px;margin-bottom:1px;' +
       'border:0;border-radius:4px;background:transparent;color:inherit;' +
       'font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-    b.onmouseenter = () => b.style.background = 'rgba(0,0,0,.07)';
+    b.onmouseenter = () => b.style.background = 'var(--bg-200,rgba(128,128,128,.15))';
     b.onmouseleave = () => b.style.background = 'transparent';
     b.onclick = e => { e.stopPropagation(); onClick(); };
     return b;
@@ -470,16 +756,25 @@
     col.appendChild(hdr);
     if (!folders.length) {
       const hint = document.createElement('div');
-      hint.textContent = 'No recent folders';
+      hint.textContent = conn === 'Local' ? 'No projects found' : 'No recent folders';
       hint.style.cssText = 'font-size:10px;opacity:.35;padding:2px 4px;';
       col.appendChild(hint);
     } else {
+      const grid = document.createElement('div');
+      // Two-column grid when list is long enough to warrant it
+      if (folders.length > 4) {
+        grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:1px 4px;';
+      }
       for (const folder of folders) {
-        const name = folder.split('/').filter(Boolean).pop() || folder;
+        const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
         const btn = makeItemBtn(name, () => clickWorkspace(conn, folder, wsRow));
         btn.title = folder;
-        col.appendChild(btn);
+        if (conn === 'Local' && CC_TODOS[folder]) {
+          btn.addEventListener('mouseenter', () => showTodoPreview(folder));
+        }
+        grid.appendChild(btn);
       }
+      col.appendChild(grid);
     }
     const browse = makeItemBtn('Browse…', () => browseConn(conn, wsRow));
     browse.style.color = 'var(--accent,#4a90e2)';
@@ -489,19 +784,49 @@
     return col;
   }
 
+  // Shared TODO.md preview pane; updated as folder buttons are hovered.
+  let _todoPreviewEl = null;
+  function showTodoPreview(folder) {
+    if (!_todoPreviewEl) return;
+    const text = CC_TODOS[folder];
+    if (!text) { _todoPreviewEl.style.display = 'none'; return; }
+    const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
+    _todoPreviewEl.style.display = '';
+    _todoPreviewEl.firstChild.textContent = name + ' — TODO.md';
+    _todoPreviewEl.lastChild.textContent = text;   // .textContent — never innerHTML
+  }
+
   function rebuildPanel() {
     const panel = document.querySelector('.' + PANEL_CLS);
     if (!panel?._wsRow) return;
-    const {Local: L = [], Myserver: M = []} = loadWS().reduce((g, {conn, folder}) => {
-      if (g[conn] && !g[conn].includes(folder)) g[conn].push(folder);
-      return g;
-    }, {Local: [], Myserver: []});
+    const ws = loadWS();
+    // Prefer runtime list (from cc-folders.json read by preload at page-load time),
+    // fall back to baked CC_AI_LOCAL list, fall back to localStorage recents.
+    const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
+      : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
+      : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
+    const M = [...new Set(ws.filter(w => w.conn === 'Myserver').map(w => w.folder))];
     panel.innerHTML = '';
     const cols = document.createElement('div');
     cols.style.cssText = 'display:flex;gap:10px;';
     cols.appendChild(buildColumn('Local',    L, panel._wsRow));
     cols.appendChild(buildColumn('Myserver', M, panel._wsRow));
     panel.appendChild(cols);
+
+    // TODO.md preview pane — hidden until a Local folder with a baked TODO is hovered.
+    const preview = document.createElement('div');
+    preview.style.cssText = 'display:none;margin-top:10px;padding-top:8px;' +
+      'border-top:1px solid var(--claude-border,rgba(128,128,128,.22));';
+    const phdr = document.createElement('div');
+    phdr.style.cssText = 'font-size:10px;font-weight:600;opacity:.55;text-transform:uppercase;' +
+      'letter-spacing:.05em;margin-bottom:5px;';
+    const pbody = document.createElement('pre');
+    pbody.style.cssText = 'margin:0;font-size:11px;line-height:1.4;white-space:pre-wrap;' +
+      'word-break:break-word;max-height:240px;overflow:auto;opacity:.85;font-family:inherit;';
+    preview.appendChild(phdr);
+    preview.appendChild(pbody);
+    panel.appendChild(preview);
+    _todoPreviewEl = preview;
   }
 
   function removeAllPanels() { document.querySelectorAll('.' + PANEL_CLS).forEach(p => p.remove()); }
@@ -523,12 +848,25 @@
     panel.className = PANEL_CLS;
     panel._wsRow = wsRow;
     panel.style.cssText = 'position:absolute;bottom:calc(100% + 6px);left:0;z-index:200;' +
+      'display:none;' +  // hidden until hover
       'background:var(--bg-100,#f5f4ef);' +
-      'border:1px solid var(--claude-border,rgba(0,0,0,.12));' +
-      'border-radius:8px;padding:10px 12px;min-width:280px;max-width:380px;width:max-content;' +
-      'box-shadow:0 4px 16px rgba(0,0,0,.12);font-family:inherit;';
+      'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
+      'border-radius:8px;padding:10px 12px;min-width:320px;max-width:480px;width:max-content;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,.16);font-family:inherit;';
     wsRow.appendChild(panel);
     rebuildPanel();
+
+    // Show on hover of the workspace row or panel itself; hide when both are left
+    const showPanel = () => { panel.style.display = ''; };
+    const hidePanel = () => {
+      setTimeout(() => {
+        if (!wsRow.matches(':hover') && !panel.matches(':hover')) panel.style.display = 'none';
+      }, 150);
+    };
+    wsRow.addEventListener('mouseenter', showPanel);
+    panel.addEventListener('mouseenter', showPanel);
+    wsRow.addEventListener('mouseleave', hidePanel);
+    panel.addEventListener('mouseleave', hidePanel);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -551,21 +889,184 @@
 
   function applyRings() {
     const m = getCache(), now = Date.now();
-    // Clear stale rings (on any element, handles migration from old dot-based rings)
+    const rl = loadRateLimits();
+
+    // Clear any expired/invalid rings first
     document.querySelectorAll('[data-cc-ring]').forEach(el => {
-      if (!m[el.dataset.ccRing] || now - m[el.dataset.ccRing] >= TTL) {
-        el.style.boxShadow = '';
-        el.style.borderRadius = '';
+      const id = el.dataset.ccRing;
+      const isCached  = m[id] && now - m[id] < TTL;
+      const isRateL   = rl[id];
+      if (!isCached && !isRateL) {
         delete el.dataset.ccRing;
+        el.style.removeProperty('outline');
+        el.style.removeProperty('outline-offset');
+        el.style.removeProperty('border-radius');
+        el.style.removeProperty('background-color');
       }
     });
-    // Apply ring to the entire conversation link row (covers title + metadata)
+
+    // Apply to all chat/project links in the sidebar.
+    // • Red   (#ef4444) = session hit "Too many requests"
+    // • Amber (#f59e0b) = prompt cache likely still warm (within 5 min)
+    // outline is NOT clipped by parent overflow:hidden; inline !important beats React styles.
+    document.querySelectorAll('a[href*="/chat/"],a[href*="/project/"]').forEach(link => {
+      const id = (link.href.match(/\/chat\/([^/?#]+)/) || [])[1];
+      if (!id) return;
+      if (rl[id]) {
+        // Rate-limited — red ring (persistent until manually cleared)
+        link.dataset.ccRing = id;
+        link.style.setProperty('outline',          '2px solid #ef4444',     'important');
+        link.style.setProperty('outline-offset',   '-1px',                  'important');
+        link.style.setProperty('border-radius',    '6px',                   'important');
+        link.style.setProperty('background-color', 'rgba(239,68,68,.12)',   'important');
+      } else if (m[id] && now - m[id] < TTL) {
+        // Cached — teal/cyan ring (distinct from Claude's own amber "needs action" dots)
+        link.dataset.ccRing = id;
+        link.style.setProperty('outline',          '2px solid #06b6d4',       'important');
+        link.style.setProperty('outline-offset',   '-1px',                    'important');
+        link.style.setProperty('border-radius',    '6px',                     'important');
+        link.style.setProperty('background-color', 'rgba(6,182,212,.10)',     'important');
+      } else if (link.dataset.ccRing) {
+        delete link.dataset.ccRing;
+        link.style.removeProperty('outline');
+        link.style.removeProperty('outline-offset');
+        link.style.removeProperty('border-radius');
+        link.style.removeProperty('background-color');
+      }
+    });
+
+    // One-time diagnostic: log the first chat links found (inspect via
+    //   JSON.parse(localStorage.getItem('cc-ring-diag')) in the console)
+    if (!window._ccRingDiag) {
+      window._ccRingDiag = true;
+      const links = [...document.querySelectorAll('a[href*="/chat/"]')].slice(0, 4);
+      localStorage.setItem('cc-ring-diag', JSON.stringify({
+        ts: Date.now(),
+        found: links.length,
+        links: links.map(l => ({href: l.getAttribute('href'), cls: l.className.slice(0,60)})),
+        cacheKeys: Object.keys(getCache()),
+        rlKeys:    Object.keys(rl),
+        path:      location.pathname,
+      }));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  3b. CHAT PIN FEATURE
+  //  Stores pinned chat IDs in cc-pins-v1 localStorage key.
+  //  Shows amber outline on sidebar link; 📌 button reveals on hover.
+  // ─────────────────────────────────────────────────────────────
+  const PINS_KEY = 'cc-pins-v1';
+  const loadPins = () => { try { return JSON.parse(localStorage.getItem(PINS_KEY) || '{}'); } catch { return {}; } };
+  const savePins = p => localStorage.setItem(PINS_KEY, JSON.stringify(p));
+
+  function togglePin(id, title) {
+    const p = loadPins();
+    if (p[id]) delete p[id]; else p[id] = {title, ts: Date.now()};
+    savePins(p);
+    applyPins();
+  }
+
+  function applyPins() {
+    const p = loadPins();
     document.querySelectorAll('a[href*="/chat/"]').forEach(link => {
       const id = (link.href.match(/\/chat\/([^/?#]+)/) || [])[1];
-      if (!id || !m[id] || now - m[id] >= TTL) return;
-      link.dataset.ccRing = id;
-      link.style.boxShadow = '0 0 0 2px #ef4444';
-      link.style.borderRadius = '6px';
+      if (!id) return;
+      if (p[id]) link.dataset.ccPinned = id;
+      else delete link.dataset.ccPinned;
+      // Sync the pin button indicator if it exists
+      const btn = link.parentElement?.querySelector(':scope > .cc-pin-btn');
+      if (btn) {
+        if (p[id]) btn.setAttribute('data-pinned', '1');
+        else btn.removeAttribute('data-pinned');
+      }
+    });
+  }
+
+  function setupPinBtns() {
+    document.querySelectorAll('a[href*="/chat/"]').forEach(link => {
+      const id = (link.href.match(/\/chat\/([^/?#]+)/) || [])[1];
+      if (!id) return;
+      const host = link.parentElement;
+      if (!host || host.dataset.ccPinHost === id) return;
+      host.dataset.ccPinHost = id;
+      host.classList.add('cc-pin-host');
+      // Remove stale pin button if chat id changed (React re-used the DOM node)
+      const old = host.querySelector(':scope > .cc-pin-btn');
+      if (old) old.remove();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cc-pin-btn';
+      btn.title = 'Pin / unpin this chat';
+      btn.textContent = '📌';
+      btn.onclick = e => { e.preventDefault(); e.stopPropagation(); togglePin(id, link.textContent.trim()); };
+      if (loadPins()[id]) btn.setAttribute('data-pinned', '1');
+      host.appendChild(btn);
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  3c. RATE-LIMIT INDICATOR  (red ring in sidebar)
+  //  When "Too many requests / temporarily limiting" text appears in the current
+  //  chat, we tag that chat ID in cc-ratelimit localStorage.
+  //  applyRings() then renders a red outline on that sidebar link.
+  // ─────────────────────────────────────────────────────────────
+  const RATELIMIT_KEY = 'cc-ratelimit';
+  const loadRateLimits = () => {
+    try { return JSON.parse(localStorage.getItem(RATELIMIT_KEY) || '{}'); } catch { return {}; }
+  };
+
+  function scanForRateLimit() {
+    const id = (location.pathname.match(/\/chat\/([^/?#]+)/) || [])[1];
+    if (!id) return;
+    const rl = loadRateLimits();
+    if (rl[id]) return; // already marked
+    // Scan page text for rate-limit error messages
+    // Use innerText so we only pick up visible text, not hidden React state
+    const pageText = document.body?.innerText || '';
+    if (/too many requests|temporarily limiting/i.test(pageText)) {
+      rl[id] = Date.now();
+      localStorage.setItem(RATELIMIT_KEY, JSON.stringify(rl));
+      applyRings(); // re-render sidebar immediately
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  3d. SIDEBAR CHAT NUMBER BADGES  (1-9)
+  //  Small dimmed numbers before each of the first 9 chat items.
+  //  Alt+1-9 jumps to the Nth visible chat (see keyboard section).
+  // ─────────────────────────────────────────────────────────────
+  function applyChatNumbers() {
+    // All visible chat links in the sidebar (not inside dialogs or panels)
+    const links = [...document.querySelectorAll(
+      'nav a[href*="/chat/"], [data-sidebar] a[href*="/chat/"], aside a[href*="/chat/"]'
+    )].filter(el => el.offsetParent !== null && !el.closest('[role="dialog"],.cc-ws-panel'));
+
+    links.forEach((link, i) => {
+      const host = link.parentElement;
+      if (!host) return;
+      const n = i < 9 ? String(i + 1) : null;
+      const existing = host.querySelector(':scope > .cc-chat-num');
+
+      if (!n) { existing?.remove(); delete link.dataset.ccNum; return; }
+      if (link.dataset.ccNum === n && existing) return; // already correct
+
+      link.dataset.ccNum = n;
+      if (existing) { existing.textContent = n; return; }
+
+      const badge = document.createElement('span');
+      badge.className = 'cc-chat-num';
+      badge.setAttribute('aria-hidden', 'true');
+      badge.textContent = n;
+      badge.style.cssText =
+        'display:inline-flex;align-items:center;justify-content:center;' +
+        'min-width:14px;height:14px;font-size:9px;font-weight:700;' +
+        'opacity:.28;border-radius:3px;background:rgba(0,0,0,.08);' +
+        'padding:0 2px;margin-right:3px;flex-shrink:0;pointer-events:none;' +
+        'font-variant-numeric:tabular-nums;';
+      // Insert before the link itself so it sits to its left
+      if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      host.insertBefore(badge, link);
     });
   }
 
@@ -717,6 +1218,63 @@
       if (toolbarBtns.length) toolbarBtns[toolbarBtns.length - 1].click();
     }
 
+    // Ctrl+1/2/3 → switch main view: Chat / Cowork / Code
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
+      const modes = ['chat', 'cowork', 'code'];
+      const mode  = modes[+e.key - 1];
+      // Search nav/sidebar elements for a button/link matching the mode name
+      const candidates = [...document.querySelectorAll(
+        'nav a,nav button,[role="navigation"] a,[role="navigation"] button,' +
+        'aside a,aside button,[data-sidebar] a,[data-sidebar] button,' +
+        '[role="complementary"] a,[role="complementary"] button'
+      )];
+      const target = candidates.find(el => {
+        const lbl = (el.getAttribute('aria-label') || el.getAttribute('title') ||
+                     el.textContent || el.dataset.testid || '').toLowerCase();
+        return lbl.includes(mode);
+      });
+      if (target) {
+        e.preventDefault(); e.stopPropagation();
+        target.click();
+      } else {
+        // Fallback: navigate to the section URL
+        const urls = {chat: '/', cowork: '/cowork', code: '/code'};
+        if (location.pathname !== urls[mode]) {
+          e.preventDefault(); e.stopPropagation();
+          history.pushState({}, '', urls[mode]);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+      }
+    }
+
+    // Ctrl+W → close file viewer / preview overlay
+    // (Ctrl+W in Claude Desktop duplicates Ctrl+N → new session, so we repurpose it)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'W' || e.key === 'w')) {
+      // Try to find and close a visible file preview or dialog
+      const closeBtn = (
+        // Prefer a dialog close button
+        document.querySelector('[role="dialog"]:not(.cc-ws-panel) button[aria-label*="close" i]') ||
+        document.querySelector('[role="dialog"]:not(.cc-ws-panel) button[aria-label*="dismiss" i]') ||
+        // Artifact panel close
+        document.querySelector('button[data-testid*="close-artifact"],button[aria-label*="close artifact" i]') ||
+        // Any visible close button that's not in nav/sidebar
+        [...document.querySelectorAll('button[aria-label*="close" i],button[aria-label*="dismiss" i]')]
+          .find(b => b.offsetParent && !b.closest('nav,aside,[data-sidebar],.cc-ws-panel'))
+      );
+      if (closeBtn) { e.preventDefault(); e.stopPropagation(); closeBtn.click(); }
+    }
+
+    // Alt+1-9 → jump to Nth chat in sidebar
+    if (e.altKey && !e.ctrlKey && !e.shiftKey) {
+      const n = parseInt(e.key, 10) || parseInt(e.code.replace('Digit',''), 10);
+      if (n >= 1 && n <= 9) {
+        const links = [...document.querySelectorAll('a[href*="/chat/"]')]
+          .filter(el => el.offsetParent !== null && !el.closest('[role="dialog"],.cc-ws-panel'));
+        const target = links[n - 1];
+        if (target) { e.preventDefault(); e.stopPropagation(); target.click(); }
+      }
+    }
+
     // Ctrl+Shift+L → toggle sidebar
     if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
       e.preventDefault();
@@ -753,6 +1311,78 @@
   }, true); // capture phase
 
   // ─────────────────────────────────────────────────────────────
+  //  5.  FLOATING USAGE BAR — works on all pages, including Cowork
+  // ─────────────────────────────────────────────────────────────
+  //  A small fixed-position chip (top-right) that always shows
+  //  C% H% W% regardless of whether the usage button exists in
+  //  the current page layout (e.g. Cowork, Projects, etc.).
+  //  Hidden while all three values are unknown; once any value
+  //  lands it becomes visible and stays.
+  // ─────────────────────────────────────────────────────────────
+  const FBAR_ID  = 'cc-fbar';
+  let   _fbarEl  = null;
+
+  function fbarBadge(letter, pct, color) {
+    // Identical visual language to pctBadge() but inline for the chip.
+    if (pct == null) {
+      return `<span style="opacity:.3;font-size:10px;font-weight:600;` +
+             `font-variant-numeric:tabular-nums;">${letter}--</span>`;
+    }
+    return `<span style="color:${color};font-size:10px;font-weight:700;` +
+           `font-variant-numeric:tabular-nums;">${letter}${pct}%</span>`;
+  }
+
+  function fbarTime(val, unit) {
+    if (!val) return '';
+    return `<span style="opacity:.5;font-size:10px;font-weight:500;">${val}${unit}</span>`;
+  }
+
+  function updateFloatingBar() {
+    const anyKnown = _ctxPct != null || _hourlyPct != null || _weeklyPct != null;
+
+    // Only show on Chat and Cowork (whitelist) — hide on Code and other pages
+    const path = location.pathname;
+
+    // Lazy-create the bar element
+    if (!_fbarEl || !document.contains(_fbarEl)) {
+      _fbarEl = document.getElementById(FBAR_ID);
+      if (!_fbarEl) {
+        _fbarEl = document.createElement('div');
+        _fbarEl.id = FBAR_ID;
+        _fbarEl.title = 'Usage: Context · Hourly · Weekly — click to dismiss';
+        _fbarEl.style.cssText =
+          'position:fixed;bottom:8px;right:8px;z-index:2147483647;' +
+          'display:none;' + // shown once we have at least one value
+          'gap:5px;align-items:center;' +
+          'background:var(--bg-100,rgba(245,244,239,.95));' +
+          'border:1px solid var(--claude-border,rgba(0,0,0,.1));' +
+          'border-radius:20px;' +
+          'padding:2px 10px 2px 8px;' +
+          'box-shadow:0 1px 6px rgba(0,0,0,.1);' +
+          'backdrop-filter:blur(6px);' +
+          'cursor:default;user-select:none;font-family:inherit;' +
+          'transition:opacity .2s;';
+        // Click-to-hide (restores on next page navigation)
+        _fbarEl.onclick = () => { _fbarEl.style.display = 'none'; };
+        document.body.appendChild(_fbarEl);
+      }
+    }
+
+    // Show only on Chat/Cowork (whitelist) — hide everywhere else (Code, etc.)
+    const onAllowedPage = path === '/' || path.startsWith('/chat') ||
+                          path.startsWith('/cowork') || path.startsWith('/new');
+    _fbarEl.style.display = (anyKnown && onAllowedPage) ? 'inline-flex' : 'none';
+    if (!anyKnown) return;
+
+    _fbarEl.innerHTML =
+      fbarBadge('C', _ctxPct,    '#3b82f6') +
+      fbarBadge('H', _hourlyPct, '#f59e0b') +
+      fbarTime(hoursUntil(_hourlyResetMs), 'h') +
+      fbarBadge('W', _weeklyPct, '#22c55e') +
+      fbarTime(daysUntil(_weeklyResetMs),  'd');
+  }
+
+  // ─────────────────────────────────────────────────────────────
   //  BOOTSTRAP
   // ─────────────────────────────────────────────────────────────
   let lastPath = '';
@@ -765,11 +1395,17 @@
     });
 
     applyRings();
+    scanForRateLimit();
+    setupPinBtns();
+    applyPins();
+    applyChatNumbers();
     scanForUsageExtras();
+    updateFloatingBar();
     hideTopBar();
     hideUnavailableBanners();
     dismissStartupPopups();
     preferCodeTab();
+    hideNewSessionOverview();
     injectRightPanelTabs(findRightPanel());
 
     if (location.pathname !== lastPath) {
@@ -783,6 +1419,8 @@
       removeAllPanels();
       // On navigation React may re-render the topbar; re-check it
       if (_topBarEl && !document.contains(_topBarEl)) _topBarEl = null;
+      // Floating bar is appended to body; re-check if body was remounted
+      if (_fbarEl && !document.contains(_fbarEl)) _fbarEl = null;
     }
   }
 
@@ -794,6 +1432,7 @@
 
   function bootstrap() {
     if (!document.documentElement) { setTimeout(bootstrap, 100); return; }
+    loadResetTimes(); // restore persisted hourly/weekly reset timestamps
     injectBaseCSS();
     patchWCOHeight(); // patch early before React reads titlebar rect
     new MutationObserver(debouncedScan)
