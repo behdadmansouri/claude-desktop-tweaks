@@ -1,0 +1,180 @@
+# Architecture Notes
+
+Detailed technical discoveries about how the patching stack works.
+See [CLAUDE.md](../CLAUDE.md) for the quick-reference overview.
+
+---
+
+## Patching stack (detailed)
+
+```
+AppRun (shell script)
+  └─ launcher-common.sh   ← sourced by AppRun, builds electron args
+       └─ electron binary
+            └─ app.asar   ← we patch this with update-ui.sh
+                 ├─ frame-fix-entry.js    (upstream wrapper, DO NOT TOUCH)
+                 ├─ frame-fix-wrapper.js  (upstream wrapper, DO NOT TOUCH)
+                 └─ .vite/build/
+                      ├─ index.pre.js    (main process, DO NOT TOUCH)
+                      ├─ index.js        ← PATCHED (folder picker + cc-ai-data IPC)
+                      └─ mainView.js     ← PATCHED (preload)
+                           └─ embeds custom-ui/ modules via executeJavaScript
+```
+
+`update-ui.sh` steps:
+1. Concatenates `custom-ui/*.js` modules → combined `custom-ui.js`
+2. Extracts asar → `/tmp/claude-ui-work/`
+3. Python: JSON-encodes `custom-ui.js`, splices into `mainView.js` between sentinels
+4. Also patches `index.js`: folder-picker defaultPath + `cc-ai-data` ipcMain handler
+5. Syntax-checks both files with `node --check`
+6. Repacks asar → copies over live asar
+
+---
+
+## Titlebar architecture — hybrid mode
+
+`frame-fix-wrapper.js` supports three modes via `CLAUDE_TITLEBAR_STYLE` env var:
+
+| Mode | frame | Result |
+|------|-------|--------|
+| `hybrid` (default) | `true` | KDE native titlebar on top + claude.ai in-app topbar (40px) below it |
+| `native` | `true` | KDE native titlebar only; claude.ai hides its own topbar via UA gate |
+| `hidden` | `false` | Frameless + WCO — **BROKEN on X11** (drag region intercepts mouse events) |
+
+**In hybrid mode** there are TWO bars stacked:
+1. KDE window decorations (OS-level, ~30px, can't hide from renderer)
+2. Claude.ai's in-app topbar (HTML, 40px, controlled by WCO shim)
+
+The WCO shim in `mainView.js` fakes `navigator.windowControlsOverlay` and
+`window.matchMedia("(display-mode: window-controls-overlay)")` so that claude.ai thinks
+it's in WCO mode and renders its in-app topbar.
+
+Key constants injected by the shim:
+```javascript
+var CONTROLS_WIDTH = 140;  // right margin for OS window controls
+var TITLEBAR_HEIGHT = 40;  // reported to claude.ai as the topbar height
+```
+
+---
+
+## Preload sandbox constraint
+
+The `mainView.js` `webPreferences` block in `index.js` sets neither `sandbox` nor
+`contextIsolation` → Electron defaults: **`sandbox:true`, `contextIsolation:true`**.
+
+In a sandboxed preload:
+- `require('fs')` and `require('os')` are **unavailable** (throw immediately)
+- `require('electron')` IS available
+- `webFrame.executeJavaScript()` runs code in the page's main world (DOM + localStorage)
+- `contextBridge.exposeInMainWorld()` exposes preload APIs to the page
+
+This is why:
+- Custom code is **embedded at patch time** by `update-ui.sh` (can't read files at runtime)
+- Injection uses `webFrame.executeJavaScript()` — same mechanism as the WCO shim
+- Folder list baked as `CC_AI_LOCAL` + live via `cc-ai-data` IPC (main process has `fs`)
+- `eval()` in the preload would run in the isolated world, not the main world
+
+---
+
+## "Negative space" root cause (v6 discovery)
+
+Hiding the in-app topbar with `display:none` left a `padding-top` that claude.ai had set
+based on the WCO rect height (40px). Fix:
+1. Patch `navigator.windowControlsOverlay.getTitlebarAreaRect()` to return `height=0`
+2. Dispatch a `resize` event so React recalculates the layout
+
+---
+
+## dframe layout (v7 discovery)
+
+Claude Desktop wraps content in its own layout system:
+- `#dframe-main` / `.dframe-content` had `padding-top` reserved for the topbar → causes
+  empty space after topbar is hidden. Fixed: CSS `padding-top:0!important`.
+- `.dframe-sidebar` wasn't filling full height. Fixed: `min-height:100%;align-self:stretch`.
+
+---
+
+## dframe sidebar redesign (2026-06 discovery — v10)
+
+Claude shipped a completely new sidebar DOM structure. Key changes:
+
+**Before (≤v9):**
+- Chat rows were `<a href="/chat/ID">` anchors
+- Chat ID was available in the URL
+
+**After (v10+):**
+- Chat rows are `<div data-row>` containers
+- Each row has `<button data-row-main-button>` (title/click target)
+- And `<button aria-label="More options for <Title>">` (only on chats, not project headers)
+- **NO chat ID anywhere in the DOM**
+- Project headers have `"New session in <Name>"` instead of `"More options for <Title>"`
+- Active chat carries `data-selected="focused"` on the row
+
+**Impact:** ring/pin persistence must key on chat **title** (read from the full, untruncated
+aria-label of the "More options" button). Two identically-titled chats would collide — rare,
+accepted.
+
+**Usage button:** aria-label changed to `"Usage: plan 7%"` (no `context`, no weekly).
+**Weekly reset:** changed from weekday+time ("Resets Wed 9:59 AM") to calendar date ("Resets Jun 24").
+
+---
+
+## Sidebar toggle button
+
+The frame-fix comment: *"buttons we care about all live in the in-app topbar."* These buttons
+are inside the now-hidden topbar, but `document.querySelector()` finds hidden elements.
+`Ctrl+Shift+L` priority order:
+1. Exact aria-label match (Close/Open/Toggle sidebar)
+2. Partial `*sidebar*` match with `:not([aria-haspopup])` guard
+3. First non-menu button in `_topBarEl` (leftmost = sidebar toggle in claude.ai)
+4. Fallback Ctrl+\ event
+
+---
+
+## Workspace click failure root cause (v6)
+
+`.click()` doesn't work on Radix UI dropdown items — they require the full pointer-event
+sequence. Fixed with `fireClick()` that dispatches:
+`pointerover → mouseover → pointerdown → mousedown → pointerup → mouseup → click`
+
+Also added `waitNewMenu()` which tracks existing menus and only resolves when a **new**
+`[role="menu"]` appears. The v6 version had a "global fallback" that returned ALL existing
+Radix items if no new menu appeared within the timeout — this caused the folder picker to
+open then immediately close (it clicked a stale item). Removed in v7.
+
+**isTrusted issue:** Radix's pointer handlers check `event.isTrusted`. Synthetic
+`dispatchEvent` calls always have `isTrusted: false`. Three workaround approaches:
+1. **`tryFiberClick()`** — calls React's fiber event handlers directly (bypasses isTrusted)
+2. **Keyboard nav** — `Home → ArrowDown×N → Enter`; Radix keydown handlers don't check isTrusted
+3. **`ccBridge.openFolder(path)`** — main-process `browseFolder` IPC (v13+, bypasses the DOM entirely)
+
+---
+
+## "Attach debugger?" Electron popup
+
+An Electron/Chromium dialog with "Cancel" and "Attach" buttons. Likely triggered by a VS Code
+debugger or Chrome DevTools instance attempting to auto-attach to Claude Desktop's Node.js
+process. Since it's a DOM-level dialog (not OS-level), `custom-ui.js` can catch it with
+`dismissStartupPopups()` and auto-click Cancel.
+
+---
+
+## Top bar "returning after React re-render" (v7 fix)
+
+JS-only `display:none` approach was vulnerable to React unmounting and remounting the element
+(which creates a fresh DOM node with no inline style). Fixed with CSS rule:
+`[data-top-left="true"]{display:none!important}` — applies regardless of when/how the element
+is created, survives React re-renders.
+
+---
+
+## CDP debugging (defunct since v1.9255.0)
+
+**Version 1.9255.0 added a security check:** if `--remote-debugging-port` is in argv without
+a valid `CLAUDE_CDP_AUTH` token (signed with Anthropic's Ed25519 key), the app calls
+`process.exit(1)` immediately. We removed the flag from `launcher-common.sh`.
+
+**CDP debugging is now blocked** — `cdp-debug.py` no longer works. The only debug path is
+`update-ui.sh` + restart. Console output goes to:
+- `~/.config/Claude/logs/claude.ai-web.log` — renderer-level (React errors, `console.error`)
+- `~/.config/Claude/logs/main-window.log` — preload-level (JS errors in mainView.js)

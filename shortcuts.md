@@ -5,7 +5,7 @@
 | Shortcut | Action |
 |---|---|
 | `Ctrl+N` | New chat |
-| `Ctrl+Shift+F` | Open/close file picker (folder browser) |
+| `Ctrl+Shift+F` | Session context-menu (left fully to native handling — see Panels & views below) |
 | `Ctrl+;` | Open side chat |
 | `Escape` | Close popup / cancel |
 
@@ -28,7 +28,7 @@
 ### Panels & views
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Shift+R` | Toggle right panel (artifact / code / preview) |
+| `Ctrl+Shift+R` | Show Files panel (or open the selected project folder from the new-session page) — bound here instead of `Ctrl+Shift+F` so native handling of that combo isn't blocked |
 | `Ctrl+W` | Close file viewer / dismiss preview overlay (repurposed — native Ctrl+W was redundant with Ctrl+N) |
 
 ### App control
@@ -42,7 +42,8 @@
 
 - **Numbers 1-9** appear before the first 9 sidebar chats — use `Alt+N` to jump to them.
 - **📌 Pin button** appears on hover beside each chat title. Pinned chats get an amber outline.
-- **Cache ring** — amber outline on a chat title means the prompt cache for that chat is still warm (< 5 min since last active).
+- **Cache ring** — teal outline on a chat title means the prompt cache for that chat is still warm (< 5 min since last active).
+- **Rate-limit ring** — red outline on a chat title means it hit a rate limit; clears automatically once a reply streams again anywhere.
 
 ---
 
@@ -70,16 +71,14 @@ The "+" button next to a project in the sidebar opens a new session directly in 
 
 ---
 
-## To re-enable the new-session overview
+## New-session overview hider — currently disabled
 
-The activity/overview section is hidden by default. To bring it back temporarily:
-
-```js
-localStorage.setItem('ccShowOverview', '1'); location.reload();
-```
-
-To re-hide:
+`hideNewSessionOverview()` is temporarily force-disabled at the top of the function (it was
+blanking the new /epitaxy home route — see `memory/issues-fixed.md` #18), so the overview section
+shows regardless of the `ccShowOverview` flag below until it's reworked. Once re-enabled, this
+toggles it:
 
 ```js
-localStorage.removeItem('ccShowOverview'); location.reload();
+localStorage.setItem('ccShowOverview', '1'); location.reload();   // show it
+localStorage.removeItem('ccShowOverview'); location.reload();     // hide it again
 ```

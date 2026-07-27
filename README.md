@@ -9,10 +9,10 @@ Custom UI injection and keyboard shortcuts for the Claude Desktop Electron app.
 | Category | Feature |
 |----------|---------|
 | **Usage tracking** | `C35% H81% 2h W45% 3d` badges (context, hourly, weekly + reset times) |
-| **Keyboard** | Ctrl+Q (quit), Ctrl+O (search), Ctrl+Shift+L (sidebar), Ctrl+Shift+R (right panel) |
+| **Keyboard** | Ctrl+Q (quit), Ctrl+O (search), Ctrl+Shift+L (sidebar), Ctrl+Shift+R (Files panel) |
 | **Sidebar** | Chat number badges (1–9), Alt+1-9 shortcuts, pinnable chats, cache ring, rate-limit indicator |
 | **Workspace** | Quick folder panel (hover-triggered) with Local + SSH columns |
-| **Layout** | Top bar hidden, space reclaimed, dframe fixed, overview panel hidden |
+| **Layout** | dframe layout fixes |
 | **Dialogs** | Auto-dismiss startup popups, hide unavailable model banners |
 
 **20+ features implemented.** See [CLAUDE.md](CLAUDE.md) for full details and [shortcuts.md](shortcuts.md) for keyboard reference.
@@ -44,10 +44,12 @@ Then fully quit and restart Claude Desktop.
 ## Making Changes
 
 ```bash
-# 1. Edit custom-ui.js
-code custom-ui.js
+# 1. Edit the relevant module in custom-ui/ (css.js, banners.js, usage.js,
+#    workspace.js, sidebar.js, topbar.js, fbar.js, bootstrap.js — see CLAUDE.md
+#    for what lives where). custom-ui.js itself is a generated build artifact.
+code custom-ui/
 
-# 2. Deploy patch
+# 2. Rebuild custom-ui.js and deploy patch
 ./scripts/update-ui.sh
 
 # 3. Restart app
@@ -62,7 +64,7 @@ code custom-ui.js
 - **[CLAUDE.md](CLAUDE.md)** — Architecture, how patching works, debugging
 - **[TODO.md](TODO.md)** — Feature status and outstanding work
 - **[shortcuts.md](shortcuts.md)** — All keyboard shortcuts
-- **[wiki.md](wiki.md)** — Session logs, discoveries, fixes (v1–v8)
+- **[memory/](memory/MEMORY.md)** — Architecture, design decisions, bug history
 
 ---
 
