@@ -4,10 +4,10 @@ Patches for the Claude Desktop Electron app via preload injection.
 
 - **Patched app:** `~/.local/lib/claude-desktop-patched/`
 - **Original AppImage:** `/opt/claude-desktop/claude-desktop.AppImage` (untouched, installed via AUR package `claude-desktop-appimage`)
-- **Patched app version:** 3.2.1+claude1.24012.9 | **custom-ui.js:** v17
+- **Patched app version:** 3.2.1+claude1.24012.9 | **custom-ui.js:** v18
 - **GitHub:** https://github.com/behdadmansouri/claude-desktop-tweaks
 
-> **2026-07-12 scope trim:** stripped down to the one feature actually in use — the project
+> **2026-07-12 scope trim:** stripped down to the one feature actually in use - the project
 > selector panel (`workspace.js`). Deleted `sidebar.js`, `fbar.js`, `topbar.js`, `usage.js`,
 > `banners.js` (verified dead: every function in them was only reachable from commented-out
 > calls). The two live one-liners they held (`emojiSuffix`, `_seenDialogs`) moved into
@@ -32,7 +32,7 @@ Patches for the Claude Desktop Electron app via preload injection.
 > 2. New home route is `/epitaxy`; it reuses `data-top-left` on a whole-app container, so the
 >    top-bar hider blanked the page. The top-bar hider is now removed entirely (native top bar
 >    looks correct, no reason to hide it); the overview hider is still DISABLED pending rework.
-> - A GUI launch from a non-interactive agent bash session can't open on the user's Wayland seat —
+> - A GUI launch from a non-interactive agent bash session can't open on the user's Wayland seat -
 >   have the user launch from the menu; read `~/.config/Claude/logs/claude.ai-web.log` for diagnostics.
 
 > **2026-06 dframe sidebar:** Chat rows are now `<div data-row>` + `<button data-row-main-button>`.

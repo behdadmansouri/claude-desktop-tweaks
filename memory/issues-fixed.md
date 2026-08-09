@@ -1,4 +1,4 @@
-# Known Issues — Fixed
+# Known Issues - Fixed
 
 Full bug history with root causes. For the current state of features, see [TODO.md](../TODO.md).
 
@@ -70,7 +70,7 @@ The number portion of badges (`42` in `C42%`) was rendered in white. Fixed by wr
 ---
 
 ## 10. Workspace panel always-on overlap with new-session overview
-Panel was `position:absolute` with no trigger — always visible, floating on top of the page
+Panel was `position:absolute` with no trigger - always visible, floating on top of the page
 overview. Two fixes: (a) panel hidden by default, shown only on `mouseenter` of the workspace row,
 hidden on `mouseleave` of both row and panel with 150ms grace period; (b) background hardcoded to
 `#f5f4ef` instead of `var(--bg-100)` which could inherit alpha.
@@ -86,7 +86,7 @@ which weren't in the selector list. Broadened selector to include those.
 
 ## 12. All custom UI features dead after v2.1.181 upgrade (loader bug)
 
-This was the critical v8 fix. The entire injection was dead — not a feature bug, a loader bug.
+This was the critical v8 fix. The entire injection was dead - not a feature bug, a loader bug.
 
 **Root cause:**
 1. The loader's first statement was `var _fs=require('fs'),_hp=require('os')...` placed **outside**
@@ -97,7 +97,7 @@ This was the critical v8 fix. The entire injection was dead — not a feature bu
 
 **Fix:** Rewrote the loader template in `update-ui.sh` to:
 - Drop `require('fs')`/`require('os')` entirely
-- Inject via `require('electron').webFrame.executeJavaScript(_c)` (proven working — same as WCO shim)
+- Inject via `require('electron').webFrame.executeJavaScript(_c)` (proven working - same as WCO shim)
 - Guard everything so a failure can never silently kill the injection
 
 See [architecture.md → Preload sandbox constraint](architecture.md#preload-sandbox-constraint).
@@ -130,13 +130,13 @@ re-scanning body text can never clear it.
 **Fix (v12):** Added `RATELIMIT_TTL = 1h`; `applyRings()` only draws red while `now - ts < TTL`.
 The stored entry is KEPT after expiry so the persistent transcript text can't immediately re-flag.
 
-**Fix (v13):** Added `clearRateLimitOnReply()` — detects when Claude starts generating a normal
+**Fix (v13):** Added `clearRateLimitOnReply()` - detects when Claude starts generating a normal
 reply and drops the ring immediately, recording it in `cc-ratelimit-cleared` so the lingering
 transcript text can't re-flag it.
 
 ---
 
-## 16. dframe sidebar — all selectors stale (v10)
+## 16. dframe sidebar - all selectors stale (v10)
 
 **Root cause:** Claude shipped a completely new sidebar layout system. Chat rows are no longer
 `<a href="/chat/ID">` anchors. All chat-ID-based features broke silently.
@@ -146,7 +146,7 @@ dframe sidebar redesign](architecture.md#dframe-sidebar-redesign-2026-06-discove
 
 ---
 
-## 17. Blank/white page — Chromium GPU process crash (2026-07-05)
+## 17. Blank/white page - Chromium GPU process crash (2026-07-05)
 
 **Symptom:** app opens to a blank page, then the window dies.
 
@@ -163,21 +163,21 @@ honors it and appends `--disable-gpu --disable-software-rasterizer`). Applied to
 - `~/.config/autostart/claude-desktop.desktop` (login autostart)
 
 Both `Exec=` lines now read `env CLAUDE_USE_WAYLAND=1 CLAUDE_DISABLE_GPU=1 …/AppRun`. Ran
-`update-desktop-database ~/.local/share/applications`. Fixed the crash — app now runs stably with
+`update-desktop-database ~/.local/share/applications`. Fixed the crash - app now runs stably with
 software compositing. See also `memory/project_claude_desktop_gpu_crash.md`.
 
 **Debugging note:** a GUI launch from a non-interactive Claude Code bash session dies immediately
-(no Wayland seat / different session) — verification must be done by the user launching from the
+(no Wayland seat / different session) - verification must be done by the user launching from the
 menu, not by the agent launching in the background.
 
 ---
 
-## 18. Blank page part 2 — top-bar hider blanked the new /epitaxy home UI (2026-07-05)
+## 18. Blank page part 2 - top-bar hider blanked the new /epitaxy home UI (2026-07-05)
 
 **Symptom (after #17's GPU fix):** page rendered for a split second, then went white and stayed white.
 
 **Root cause:** OUR patch. Claude shipped a redesigned home at route `/epitaxy`. It reuses the
-`data-top-left="true"` attribute — but that attribute now sits on a container that wraps the ENTIRE
+`data-top-left="true"` attribute - but that attribute now sits on a container that wraps the ENTIRE
 app content, not the little title bar it marked before. Our top-bar hider therefore hid everything:
 - CSS rule `[data-top-left="true"]{display:none!important;height:0!important;overflow:hidden!important}` (css.js)
 - `hideTopBar()` → `findTopBar()` returns the `[data-top-left="true"]` element first and applies
@@ -185,17 +185,83 @@ app content, not the little title bar it marked before. Our top-bar hider theref
 
 **How it was diagnosed:** a temporary `ccDiag()` beacon in `bootstrap.js` logged DOM state to the
 renderer log (`~/.config/Claude/logs/claude.ai-web.log`). Key signal: `bodyTextContentLen` grew to
-~6000 (content present in DOM) while `innerText` length stayed 0 (nothing visible — everything
+~6000 (content present in DOM) while `innerText` length stayed 0 (nothing visible - everything
 `display:none`), and `topLeft=1`. `innerText` returns "" for `display:none` subtrees; `textContent`
-does not — that gap is what proved "rendered but hidden by us" vs "renderer never loaded".
+does not - that gap is what proved "rendered but hidden by us" vs "renderer never loaded".
 `hideNewSessionOverview` was cleared as a suspect (`ovHidden=0`).
 
 **Fix:** removed the `[data-top-left]` CSS rule (css.js) and early-`return`'d `hideTopBar()`
-(topbar.js). Also early-`return`'d `hideNewSessionOverview()` (banners.js) — same class of risk on
+(topbar.js). Also early-`return`'d `hideNewSessionOverview()` (banners.js) - same class of risk on
 the new non-`/chat/` route. Top-bar hiding is now OFF (native top bar visible again); it needs
 reworking against the new DOM before re-enabling. Diagnostic beacon removed after confirmation.
 
 **Lesson:** attribute-selector-based hiders that `display:none` a whole element are fragile across
-Claude UI redesigns — when the attribute gets reused on a bigger container, the feature nukes the
+Claude UI redesigns - when the attribute gets reused on a bigger container, the feature nukes the
 app. Prefer size/position guards (never hide an element taller than ~80px or that contains the
 composer/main) over blanket attribute matches.
+
+---
+
+## 19. "emoji only" mode collapsed the panel into one tall column (2026-08-09)
+
+**Symptom:** ticking "emoji only" didn't strip project names - it just stacked everything into a
+single column, which then made the panel tall enough to run off the top of the window.
+
+**Root cause:** `makeFolderBtn` derived compactness itself: `compact = emojiOnly() && emoji`. A
+folder with no leading emoji (`AI Projects`, `memory`, `temp`, and every SSH folder - server paths
+have no emoji convention) therefore still rendered a named row at `width:100%`, and a 100%-wide
+item inside the emoji-only `display:flex;flex-wrap:wrap` grid forces a line break. One non-emoji
+folder per line is exactly what the user saw.
+
+**Fix:** compactness is now decided by the caller and passed down (`folderGrid(..., {compact})` →
+`makeFolderBtn(..., opts)`). The Local column opts in and *filters out* emoji-less folders rather
+than rendering them wide; the Remote column never compacts, so SSH folders keep readable names in
+both modes. If filtering would empty the Local column, it falls back to the full list.
+
+**Lesson:** a "compact" flag read from global state inside a leaf renderer can't be overridden by
+the one caller that needs the other behaviour. Pass presentation down from the container.
+
+---
+
+## 20. Panel escaped the viewport on zoom and with long lists (2026-08-09)
+
+**Symptom:** the project selector hung off the edge of the window, and browser zoom made it worse.
+
+**Root cause:** two halves.
+- Horizontal: `clampPanel` ran only at install and rebuild. Zoom changes `window.innerWidth` and
+  moves the row, but nothing re-ran the clamp, so the manually-computed `left` offset went stale.
+- Vertical: the panel is anchored `bottom:calc(100% + 6px)` (it grows *upward*) but capped with a
+  fixed `max-height:calc(100vh - 90px)`, which ignores how far the workspace row actually sits from
+  the top of the window. Available space above the row is `row.top`, not the viewport height.
+
+**Fix:** `clampPanel` now sets `max-height` per call from the row's live `getBoundingClientRect().top`
+(min 140px) and keeps the horizontal shift; `scheduleClamp()` (one rAF-coalesced clamp of every
+panel) is wired to `window.resize`, `visualViewport` resize/scroll, and a per-panel `ResizeObserver`
+so content changes re-clamp too. The observer is disconnected in `removeAllPanels`. The TODO preview
+body also went from `height:min(240px,28vh)` to `max-height:` so short TODOs stop reserving 240px.
+
+**Lesson:** for an upward-growing absolutely-positioned box, `100vh` is never the right budget -
+measure the anchor.
+
+---
+
+## 21. Stray SSH entries that mixed up Local and remote (2026-08-09)
+
+**Symptom:** unreadable tiles in the SSH column; clicking them got "confused between local and ssh".
+
+**Root cause:** the row click handler sampled the connection label and the folder label exactly
+400ms after *any* click on the workspace row. Switching workspace is two async steps (connection,
+then folder), so a single fixed-delay sample can catch the new SSH host still paired with the
+previous Local folder. That bogus pair persisted in `cc-ws-v4` forever, and clicking it later sent
+`clickWorkspace` hunting for a Local folder on the SSH host. Labels were also stored raw from
+`textContent`, so control/private-use codepoints (icon fonts) came along and rendered as tofu.
+
+**Fix:** `sampleWS()` takes two samples ~700ms apart and only records when they agree and no menu
+is open; `cleanLabel()` strips `\p{Cc}\p{Cf}\p{Co}` and collapses whitespace, and `recordWS`
+dedupes case-insensitively on the cleaned value. Right-clicking a remote tile calls `forgetWS()` to
+drop a bad entry (remote tiles only - Local tiles come from `cc-folders.json`, so forgetting one
+wouldn't remove it). Real SSH folders live under `/root/000_myagents/...`, confirmed in
+`~/.config/Claude/claude_desktop_config.json` (`epitaxyPrefs/epitaxy-folder-permission-mode.*`).
+
+**Lesson:** scraping UI labels on a timer records transitional states. Sample twice and require
+agreement, or don't record at all.

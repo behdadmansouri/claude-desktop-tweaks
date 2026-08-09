@@ -12,7 +12,7 @@
 #   - the old WCO/frame-fix JS shim is gone; the official build handles the
 #     window frame natively, so mainView.js no longer needs that patch.
 #   - IPC channel names embed a per-build UUID
-#     ($eipc_message$_<uuid>_$_...) — extracted dynamically from mainView.js.
+#     ($eipc_message$_<uuid>_$_...) - extracted dynamically from mainView.js.
 set -e
 
 # Resolve the project dir regardless of whether this script is called via symlink.
@@ -23,7 +23,7 @@ MODULES_DIR="$PROJECT_DIR/custom-ui"
 # Build combined custom-ui.js from individual module files.
 echo "→ Building custom-ui.js from modules..."
 {
-  printf '/**\n * Claude Desktop custom UI — v17\n * Generated from custom-ui/ modules by update-ui.sh — do not edit directly.\n */\n'
+  printf '/**\n * Claude Desktop custom UI - v18\n * Generated from custom-ui/ modules by update-ui.sh - do not edit directly.\n */\n'
   printf '(function () {\n'"'"'use strict'"'"';\n\n'
   cat "$MODULES_DIR/css.js"
   printf '\n'
@@ -43,7 +43,7 @@ EXTRACT="/tmp/claude-ui-work"
 
 if [[ ! -f "$ASAR" ]]; then
   echo "ERROR: asar not found at $ASAR" >&2
-  echo "  (expected new v3.0.0-rebase layout — usr/lib/claude-desktop/resources/app.asar)" >&2
+  echo "  (expected new v3.0.0-rebase layout - usr/lib/claude-desktop/resources/app.asar)" >&2
   exit 1
 fi
 
@@ -51,7 +51,7 @@ echo "→ Extracting asar..."
 rm -rf "$EXTRACT"
 npx --yes @electron/asar extract "$ASAR" "$EXTRACT"
 
-# Locate the main-process bundle by content signature rather than filename —
+# Locate the main-process bundle by content signature rather than filename -
 # the vite build hashes chunk filenames and they change every release.
 MAIN_BUNDLE="$(grep -lF '_$_FileSystem_$_browseFolder' "$EXTRACT"/.vite/build/*.js | head -1)"
 if [[ -z "$MAIN_BUNDLE" ]]; then
@@ -76,7 +76,7 @@ except Exception:
     ai_list = []
 
 # ── Write cc-folders.json so the preload can re-read it at runtime
-#    (no asar repack needed after a rename — just run refresh-folders.sh)
+#    (no asar repack needed after a rename - just run refresh-folders.sh)
 folders_json = os.path.expanduser("~/.config/Claude/cc-folders.json")
 with open(folders_json, "w") as f:
     json.dump(ai_list, f)
@@ -112,7 +112,7 @@ with open(mv_path) as f:
 #    invokes the right channel. The UUID changes every release; the
 #    "claude.web_DOLLAR_WindowControl_DOLLAR_close" suffix has been stable
 #    across the 2.1.x and 3.x lines observed so far.
-# (Built via chr(36) rather than a literal "\$" in this source file — the
+# (Built via chr(36) rather than a literal "\$" in this source file - the
 #  bash heredoc here is unquoted, so a literal $ would trigger bash variable
 #  expansion, and getting the backslash-escaping right for both a *regex*
 #  meta-dollar and a *plain-string* dollar in the same heredoc is error-prone.
@@ -121,7 +121,7 @@ D = chr(36)
 uuid_re = re.compile(re.escape(D) + r'eipc_message' + re.escape(D) + r'_([0-9a-fA-F-]+)_' + re.escape(D) + r'_')
 m = uuid_re.search(mv)
 if not m:
-    raise RuntimeError("Could not find eipc UUID in mainView.js — Ctrl+Q channel unknown")
+    raise RuntimeError("Could not find eipc UUID in mainView.js - Ctrl+Q channel unknown")
 eipc_uuid = m.group(1)
 close_channel = D + "eipc_message" + D + "_" + eipc_uuid + "_" + D + "_claude.web_" + D + "_WindowControl_" + D + "_close"
 print(f"  eipc UUID: {eipc_uuid}")
@@ -160,9 +160,9 @@ ctrlq_block = (
 )
 
 # Both branches replace everything from the start of our block through the
-# trailing sourceMappingURL comment (or EOF) — NOT just up to the end_marker
+# trailing sourceMappingURL comment (or EOF) - NOT just up to the end_marker
 # text, which would leave the old block's function body dangling behind the
-# newly-inserted one (produces a corrupt duplicate — caught by node --check
+# newly-inserted one (produces a corrupt duplicate - caught by node --check
 # below, but better to not generate it).
 smu_idx = mv.rfind("//# sourceMappingURL")
 tail_at = smu_idx if smu_idx != -1 else len(mv)
@@ -191,7 +191,7 @@ with open(main_path) as f:
 
 ix_changed = False
 
-# defaultPath:<var>??<homedirExpr>.homedir()  — homedirExpr may be a bare
+# defaultPath:<var>??<homedirExpr>.homedir()  - homedirExpr may be a bare
 # identifier ("s") or a member/import alias ("\$t"); handle both.
 defaultpath_pattern = re.compile(r'defaultPath:(\w+)\?\?(\\\$?\w+)\.homedir\(\)')
 def _defaultpath_repl(m):
@@ -256,7 +256,7 @@ else:
 
 if "if(__cc)return __cc;" not in ix:
     # browseFolder handler arg count varies by release (3 params in the old
-    # asar, 5 in the v3.0.0-rebase build) — match any arg list.
+    # asar, 5 in the v3.0.0-rebase build) - match any arg list.
     ix2, n_bf = re.subn(
         r'(_\\\$_FileSystem_\\\$_browseFolder",async\([^)]*\)=>\{)',
         r'\1var __cc=globalThis.__ccConsumeArmedFolder&&globalThis.__ccConsumeArmedFolder();if(__cc)return __cc;',
@@ -267,7 +267,7 @@ if "if(__cc)return __cc;" not in ix:
         ix_changed = True
         print(f"  Patched browseFolder handler to honor armed folder ({n_bf} site(s))")
     else:
-        print("  WARNING: browseFolder handler signature not found — folder one-click open disabled")
+        print("  WARNING: browseFolder handler signature not found - folder one-click open disabled")
 else:
     print("  browseFolder handler already honors armed folder")
 
