@@ -1,71 +1,41 @@
-# Claude Desktop - TODO & Feature Status
+# TODO - Claude Desktop 🤖
 
-## Implemented ✅
+Feature status lives in [memory/features.md](memory/features.md), bug history in
+[memory/issues-fixed.md](memory/issues-fixed.md), the edit/deploy loop in
+[CLAUDE.md](CLAUDE.md#quick-start). This file is open work only.
 
-**Keyboard shortcuts** - Ctrl+Q (quit), Ctrl+O (search), Ctrl+Shift+L (toggle sidebar),
-Ctrl+Shift+R (Files panel / open project folder), Ctrl+W (close viewer), Alt+1-9 (jump to
-Nth chat), Ctrl+1/2/3 (Chat/Cowork/Code). Ctrl+Shift+F is left to native handling (session
-context-menu).
+## ⚡ Next up
 
-**Usage** - badges (`C35% H81% 2h W45% 3d`), reset times persist (`cc-reset-v1`), auto-refresh
-after a reply and passively while idle. Emoji suffix on folder names.
+- [ ] **The patched build has no update path** `L` `think` - `claude-desktop-appimage` was
+      removed from the AUR (2026-08-14), so `scripts/update-appimage.sh` fails at step 1. The
+      installed build is 1.24012.9; Anthropic's official app is already 1.26832.0 and AUR
+      `claude-desktop-extra` is 1.30096.1. Pick a new base and rework the script:
+      [memory/maintenance.md](memory/maintenance.md) has the option comparison.
 
-**Sidebar** - chat number badges (solid digit chip, 1-9), pin chats (📌, amber outline), cache
-ring (teal, 5-min TTL), rate-limit ring (red, auto-clears on next reply, `cc-ratelimit`).
+- [ ] **Duplicate "close right bar" buttons in Cowork** `M` - two floating close buttons appear
+      at once. Needs live DOM inspection (devtools or a screenshot) before any fix; no blind
+      selector guess, given how fragile the hiders have been ([issues-fixed.md](memory/issues-fixed.md) #18).
 
-**Workspace panel** - Local (from `~/Documents/AI Projects/` via `cc-ai-data` IPC) + SSH recents
-columns, hover-triggered, 2-column grid when >4 items, TODO.md markdown previews, folder click opens
-directly via `ccBridge.openFolder`, solid background, responsive width, dark mode. "Emoji only"
-compacts the Local column to emoji tiles (emoji-less projects hidden; SSH names always shown);
-panel re-clamps to the viewport on zoom/resize; right-click a remote tile to forget it.
+## 🤔 Needs your call
 
-**Dialogs/banners** - startup popup auto-dismiss, "Attach debugger?" auto-cancel, "Model unavailable"
-banner hidden. Code tab auto-select in artifact panel. dframe layout fixes.
+- [ ] **KDE titlebar no longer hidden** `S` - a manual System Settings step, not a code change.
+      Window Management → Window Rules → Add → focus Claude Desktop → "Detect Window Properties"
+      → set "No titlebar and frame" → Force → Yes. Why it broke: the GPU-crash fix (#17) added
+      `CLAUDE_USE_WAYLAND=1`, turning the app from an XWayland client into a native-Wayland one.
+      KWin matches native Wayland windows by `app_id`, not X11 `WM_CLASS`, so any rule keyed on
+      the old class silently stopped matching. No `~/.config/kwinrulesrc` exists on this system
+      at all, so a rule likely was never saved in the first place.
 
----
+- [ ] **Effort selector disappears too quickly** `S` - native app behavior, not ours. Decide
+      whether it's worth a custom-ui hover-persistence patch or just lived with. Reported
+      2026-06-26.
 
-## Open Threads 📋
+## 📋 Backlog
 
-- [ ] **Duplicate "close right bar" buttons in Cowork** - two floating close buttons appear at
-      once. Needs live DOM inspection next time it's visible (devtools or a screenshot) before
-      attempting a fix - no blind selector guess given how fragile these hiders have been (see
-      `memory/issues-fixed.md` #18).
-- [ ] **New-session-overview hider** (`hideNewSessionOverview()` in banners.js) - still disabled
-      since the /epitaxy blank-page bug (#18). Not reconfirmed either way; rework or confirm safe
-      to delete like the top-bar hider was.
-- [ ] Audit `hideUnavailableBanners` for the same whole-container risk that hit the top-bar and
-      overview hiders.
-- [ ] **KDE titlebar no longer hidden** - `StartupWMClass` mismatch in
-      `claude-desktop.desktop` (`claude-desktop` vs the actual `--class=Claude`) is fixed. Likely
-      also affected: the GPU-crash fix (#17) added `CLAUDE_USE_WAYLAND=1`, which switched the app
-      from an XWayland client to a native-Wayland one - KWin matches native Wayland windows by
-      `app_id`, not X11 `WM_CLASS`, so any old window rule keyed on the X11 class silently stopped
-      matching. No `~/.config/kwinrulesrc` rule exists on this system at all, so if one was never
-      saved, a manual "no titlebar" toggle wouldn't survive the recent restarts either way. Fix:
-      open System Settings → Window Management → Window Rules → Add, focus Claude Desktop, click
-      "Detect Window Properties" (captures whatever KWin actually matches on right now), and set
-      "No titlebar and frame" → Force → Yes.
-- [ ] Verify whether Ctrl+1/2/3 is now natively bound - our handler runs capture-phase and
-      `stopPropagation()`s, so it always masks a native equivalent and this can't be confirmed
-      from code alone. To test: comment out the block in `topbar.js`, re-patch, and check if
-      Ctrl+1/2/3 still switches Chat/Cowork/Code without it.
-- [ ] Consider re-patching against a current app version (official is 2.1.201 under
-      `~/.local/share/claude/versions/`; patched build is still 2.1.149).
+- [ ] **Bring `titlewatch.js` to the official app, or don't** `M` - the official build has no
+      custom UI, so its window title stays `"Claude"` and Timekeeper's ActivityWatch watcher
+      learns nothing from it. Only matters if the official app becomes the daily driver.
 
-- [ ] Usage counter doesn't refresh until clicked; Ctrl+Shift+R does nothing (and Ctrl+` doesn't
-      open the terminal); the effort selector disappears too quickly. Reported 2026-06-26,
-      moved here 2026-07-27 from the Timekeeper project where it had been misfiled.
+## ❌ Not planned
 
----
-
-## Not Planned ❌
-- Weekly usage circle - data not reliably in the DOM (floating bar shows W% instead).
-- Workspace "New Project on SSH" - needs main-process IPC to create remote dirs.
-
----
-
-For architecture, decisions, and bug history, see [`memory/`](memory/MEMORY.md).
-
-## How to test
-1. Edit the module in `custom-ui/` · 2. `./scripts/update-ui.sh` · 3. `~/.local/bin/claude-quit`
-· 4. Relaunch from the app menu · 5. Check console for `[custom-ui] ok`.
+- **Workspace "New Project on SSH"** - needs main-process IPC to create remote directories.

@@ -26,6 +26,22 @@ The AppImage at `/opt/claude-desktop/` is a distro package (AUR: `claude-desktop
 maintained by aaddrick/claude-desktop-debian), NOT a self-updating Electron app -- the old
 `~/.local/share/claude/versions/` self-update folder is gone as of the v3.0.0 rebase.
 
+> **BROKEN as of 2026-08-14: `claude-desktop-appimage` was removed from the AUR.**
+> `curl 'https://aur.archlinux.org/rpc/?v=5&type=info&arg=claude-desktop-appimage'` returns
+> `resultcount: 0`, so step 1 below (`yay -S claude-desktop-appimage`) now fails. The package is
+> still *installed* locally at `3.2.1+claude1.24012.9-1`; only the upstream source is gone.
+> Surviving AUR packages, neither of which is a drop-in:
+> | Package | Version | Note |
+> |---|---|---|
+> | `claude-desktop` | 1.24012.9 | flagged out-of-date, same build already installed. Conflicts (our installed package provides `claude-desktop`). |
+> | `claude-desktop-extra` | 1.30096.1 | actively maintained, newer than Anthropic's own `.deb` (1.26832.0). Declares no conflicts but owns the same `/usr` paths, so pacman will still refuse alongside ours. |
+>
+> Options, undecided: repoint `update-appimage.sh` at building aaddrick's
+> `claude-desktop-debian` repo directly (no AUR middleman), or rebase the patcher onto
+> `claude-desktop-extra` and drop the patched build's own package. Until then
+> `scripts/install-official.sh` is the only working update path, and it only updates the
+> *unpatched* official app.
+
 `scripts/update-appimage.sh` automates the whole flow below (see the
 `update-claude-desktop` skill at `~/.claude/skills/update-claude-desktop/` for the
 one-line invocation):
