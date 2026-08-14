@@ -69,7 +69,7 @@ unpatched and independent:
 | Version | 1.24012.9 | 1.26832.0 |
 | Custom UI | yes | **no** (no project panel, no titlewatch) |
 | `claude://` handler | yes | deliberately not registered |
-| Update | `scripts/update-appimage.sh` | `scripts/install-official.sh` |
+| Update | **none** - `scripts/update-appimage.sh` is broken, the AUR package was removed 2026-08-14 (see `memory/maintenance.md`) | `scripts/install-official.sh` |
 
 They cannot coexist as *packages* -- `claude-desktop-appimage` declares
 `provides/conflicts=claude-desktop`, and AUR `claude-desktop` / `claude-desktop-extra` would
