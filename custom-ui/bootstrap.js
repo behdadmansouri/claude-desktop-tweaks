@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────
 //  MAIN SCAN + BOOTSTRAP
-//  2026-07-12: trimmed to the one live feature — the project selector
+//  2026-07-12: trimmed to the one live feature - the project selector
 //  panel (workspace.js). Everything else (usage badges, pins, rings,
 //  rate-limit, chat numbers, banners, floating bar, topbar shortcuts,
 //  WCO patch) was dead code behind disabled calls and has been removed.

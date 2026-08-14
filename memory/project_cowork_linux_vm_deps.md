@@ -7,7 +7,7 @@ metadata:
   originSessionId: e06f6de1-4bd1-4194-852d-4358ae339fd8
 ---
 
-The aaddrick `claude-desktop-appimage` (Linux build) ALREADY supports Cowork on Linux —
+The aaddrick `claude-desktop-appimage` (Linux build) ALREADY supports Cowork on Linux -
 it is NOT platform-gated off. Cowork's local agent runs a QEMU microVM via the bundled
 `resources/cowork-linux-helper` (Go binary: buildQEMUArgs, startVirtiofsd, OVMF firmware,
 virtiofsd, vsock, KVM).
@@ -34,5 +34,5 @@ sudo ln -sf /usr/lib/virtiofsd /usr/libexec/virtiofsd
 `/dev/kvm` was already 0666 so KVM access is fine without joining the kvm group.
 
 Implication: the standalone `claude-cowork-linux` package was UNNECESSARY for getting Cowork
-in Desktop — plain aaddrick desktop + these symlinks is enough. See [[project-claude-cowork-vs-desktop]].
+in Desktop - plain aaddrick desktop + these symlinks is enough. See [[project-claude-cowork-vs-desktop]].
 Deps required: `edk2-ovmf virtiofsd qemu-system-x86` (all were already installed here).

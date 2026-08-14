@@ -31,7 +31,7 @@ AppRun (shell script)
 
 ---
 
-## Titlebar architecture — hybrid mode
+## Titlebar architecture - hybrid mode
 
 `frame-fix-wrapper.js` supports three modes via `CLAUDE_TITLEBAR_STYLE` env var:
 
@@ -39,7 +39,7 @@ AppRun (shell script)
 |------|-------|--------|
 | `hybrid` (default) | `true` | KDE native titlebar on top + claude.ai in-app topbar (40px) below it |
 | `native` | `true` | KDE native titlebar only; claude.ai hides its own topbar via UA gate |
-| `hidden` | `false` | Frameless + WCO — **BROKEN on X11** (drag region intercepts mouse events) |
+| `hidden` | `false` | Frameless + WCO - **BROKEN on X11** (drag region intercepts mouse events) |
 
 **In hybrid mode** there are TWO bars stacked:
 1. KDE window decorations (OS-level, ~30px, can't hide from renderer)
@@ -70,7 +70,7 @@ In a sandboxed preload:
 
 This is why:
 - Custom code is **embedded at patch time** by `update-ui.sh` (can't read files at runtime)
-- Injection uses `webFrame.executeJavaScript()` — same mechanism as the WCO shim
+- Injection uses `webFrame.executeJavaScript()` - same mechanism as the WCO shim
 - Folder list baked as `CC_AI_LOCAL` + live via `cc-ai-data` IPC (main process has `fs`)
 - `eval()` in the preload would run in the isolated world, not the main world
 
@@ -94,7 +94,7 @@ Claude Desktop wraps content in its own layout system:
 
 ---
 
-## dframe sidebar redesign (2026-06 discovery — v10)
+## dframe sidebar redesign (2026-06 discovery - v10)
 
 Claude shipped a completely new sidebar DOM structure. Key changes:
 
@@ -111,7 +111,7 @@ Claude shipped a completely new sidebar DOM structure. Key changes:
 - Active chat carries `data-selected="focused"` on the row
 
 **Impact:** ring/pin persistence must key on chat **title** (read from the full, untruncated
-aria-label of the "More options" button). Two identically-titled chats would collide — rare,
+aria-label of the "More options" button). Two identically-titled chats would collide - rare,
 accepted.
 
 **Usage button:** aria-label changed to `"Usage: plan 7%"` (no `context`, no weekly).
@@ -133,20 +133,20 @@ are inside the now-hidden topbar, but `document.querySelector()` finds hidden el
 
 ## Workspace click failure root cause (v6)
 
-`.click()` doesn't work on Radix UI dropdown items — they require the full pointer-event
+`.click()` doesn't work on Radix UI dropdown items - they require the full pointer-event
 sequence. Fixed with `fireClick()` that dispatches:
 `pointerover → mouseover → pointerdown → mousedown → pointerup → mouseup → click`
 
 Also added `waitNewMenu()` which tracks existing menus and only resolves when a **new**
 `[role="menu"]` appears. The v6 version had a "global fallback" that returned ALL existing
-Radix items if no new menu appeared within the timeout — this caused the folder picker to
+Radix items if no new menu appeared within the timeout - this caused the folder picker to
 open then immediately close (it clicked a stale item). Removed in v7.
 
 **isTrusted issue:** Radix's pointer handlers check `event.isTrusted`. Synthetic
 `dispatchEvent` calls always have `isTrusted: false`. Three workaround approaches:
-1. **`tryFiberClick()`** — calls React's fiber event handlers directly (bypasses isTrusted)
-2. **Keyboard nav** — `Home → ArrowDown×N → Enter`; Radix keydown handlers don't check isTrusted
-3. **`ccBridge.openFolder(path)`** — main-process `browseFolder` IPC (v13+, bypasses the DOM entirely)
+1. **`tryFiberClick()`** - calls React's fiber event handlers directly (bypasses isTrusted)
+2. **Keyboard nav** - `Home → ArrowDown×N → Enter`; Radix keydown handlers don't check isTrusted
+3. **`ccBridge.openFolder(path)`** - main-process `browseFolder` IPC (v13+, bypasses the DOM entirely)
 
 ---
 
@@ -163,7 +163,7 @@ process. Since it's a DOM-level dialog (not OS-level), `custom-ui.js` can catch 
 
 JS-only `display:none` approach was vulnerable to React unmounting and remounting the element
 (which creates a fresh DOM node with no inline style). Fixed with CSS rule:
-`[data-top-left="true"]{display:none!important}` — applies regardless of when/how the element
+`[data-top-left="true"]{display:none!important}` - applies regardless of when/how the element
 is created, survives React re-renders.
 
 ---
@@ -174,7 +174,7 @@ is created, survives React re-renders.
 a valid `CLAUDE_CDP_AUTH` token (signed with Anthropic's Ed25519 key), the app calls
 `process.exit(1)` immediately. We removed the flag from `launcher-common.sh`.
 
-**CDP debugging is now blocked** — `cdp-debug.py` no longer works. The only debug path is
+**CDP debugging is now blocked** - `cdp-debug.py` no longer works. The only debug path is
 `update-ui.sh` + restart. Console output goes to:
-- `~/.config/Claude/logs/claude.ai-web.log` — renderer-level (React errors, `console.error`)
-- `~/.config/Claude/logs/main-window.log` — preload-level (JS errors in mainView.js)
+- `~/.config/Claude/logs/claude.ai-web.log` - renderer-level (React errors, `console.error`)
+- `~/.config/Claude/logs/main-window.log` - preload-level (JS errors in mainView.js)

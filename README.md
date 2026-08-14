@@ -1,4 +1,4 @@
-# Claude Desktop — Custom UI Patches
+# Claude Desktop - Custom UI Patches
 
 Custom UI injection and keyboard shortcuts for the Claude Desktop Electron app.
 
@@ -22,8 +22,8 @@ Custom UI injection and keyboard shortcuts for the Claude Desktop Electron app.
 ## Quick Start
 
 ### Prerequisites
-- **Node.js** — for `npx @electron/asar`
-- **Python 3** — for patching script
+- **Node.js** - for `npx @electron/asar`
+- **Python 3** - for patching script
 
 ### Setup (Linux/macOS)
 
@@ -45,7 +45,7 @@ Then fully quit and restart Claude Desktop.
 
 ```bash
 # 1. Edit the relevant module in custom-ui/ (css.js, banners.js, usage.js,
-#    workspace.js, sidebar.js, topbar.js, fbar.js, bootstrap.js — see CLAUDE.md
+#    workspace.js, sidebar.js, topbar.js, fbar.js, bootstrap.js - see CLAUDE.md
 #    for what lives where). custom-ui.js itself is a generated build artifact.
 code custom-ui/
 
@@ -61,10 +61,10 @@ code custom-ui/
 
 ## Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** — Architecture, how patching works, debugging
-- **[TODO.md](TODO.md)** — Feature status and outstanding work
-- **[shortcuts.md](shortcuts.md)** — All keyboard shortcuts
-- **[memory/](memory/MEMORY.md)** — Architecture, design decisions, bug history
+- **[CLAUDE.md](CLAUDE.md)** - Architecture, how patching works, debugging
+- **[TODO.md](TODO.md)** - Feature status and outstanding work
+- **[shortcuts.md](shortcuts.md)** - All keyboard shortcuts
+- **[memory/](memory/MEMORY.md)** - Architecture, design decisions, bug history
 
 ---
 

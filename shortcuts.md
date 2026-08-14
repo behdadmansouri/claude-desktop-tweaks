@@ -1,15 +1,15 @@
-# Claude Desktop — Keyboard Shortcuts
+# Claude Desktop - Keyboard Shortcuts
 
 ## Built-in Claude Desktop shortcuts
 
 | Shortcut | Action |
 |---|---|
 | `Ctrl+N` | New chat |
-| `Ctrl+Shift+F` | Session context-menu (left fully to native handling — see Panels & views below) |
+| `Ctrl+Shift+F` | Session context-menu (left fully to native handling - see Panels & views below) |
 | `Ctrl+;` | Open side chat |
 | `Escape` | Close popup / cancel |
 
-> Note: built-ins are not exhaustive — discovered by experimentation.
+> Note: built-ins are not exhaustive - discovered by experimentation.
 
 ---
 
@@ -28,8 +28,8 @@
 ### Panels & views
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Shift+R` | Show Files panel (or open the selected project folder from the new-session page) — bound here instead of `Ctrl+Shift+F` so native handling of that combo isn't blocked |
-| `Ctrl+W` | Close file viewer / dismiss preview overlay (repurposed — native Ctrl+W was redundant with Ctrl+N) |
+| `Ctrl+Shift+R` | Show Files panel (or open the selected project folder from the new-session page) - bound here instead of `Ctrl+Shift+F` so native handling of that combo isn't blocked |
+| `Ctrl+W` | Close file viewer / dismiss preview overlay (repurposed - native Ctrl+W was redundant with Ctrl+N) |
 
 ### App control
 | Shortcut | Action |
@@ -40,10 +40,10 @@
 
 ## Sidebar features
 
-- **Numbers 1-9** appear before the first 9 sidebar chats — use `Alt+N` to jump to them.
+- **Numbers 1-9** appear before the first 9 sidebar chats - use `Alt+N` to jump to them.
 - **📌 Pin button** appears on hover beside each chat title. Pinned chats get an amber outline.
-- **Cache ring** — teal outline on a chat title means the prompt cache for that chat is still warm (< 5 min since last active).
-- **Rate-limit ring** — red outline on a chat title means it hit a rate limit; clears automatically once a reply streams again anywhere.
+- **Cache ring** - teal outline on a chat title means the prompt cache for that chat is still warm (< 5 min since last active).
+- **Rate-limit ring** - red outline on a chat title means it hit a rate limit; clears automatically once a reply streams again anywhere.
 
 ---
 
@@ -71,10 +71,10 @@ The "+" button next to a project in the sidebar opens a new session directly in 
 
 ---
 
-## New-session overview hider — currently disabled
+## New-session overview hider - currently disabled
 
 `hideNewSessionOverview()` is temporarily force-disabled at the top of the function (it was
-blanking the new /epitaxy home route — see `memory/issues-fixed.md` #18), so the overview section
+blanking the new /epitaxy home route - see `memory/issues-fixed.md` #18), so the overview section
 shows regardless of the `ccShowOverview` flag below until it's reworked. Once re-enabled, this
 toggles it:
 

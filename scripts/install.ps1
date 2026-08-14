@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Claude Desktop UI Patcher  —  Windows
+# Claude Desktop UI Patcher  -  Windows
 #
 # Usage (PowerShell, run as your normal user):
 #   .\install.ps1                         # auto-detect

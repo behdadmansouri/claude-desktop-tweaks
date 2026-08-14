@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────
 //  TITLE WATCH
 //  Claude Desktop reports a constant window caption of "Claude", so every
-//  ActivityWatch event looks identical — "Claude → Claude" tells you nothing
+//  ActivityWatch event looks identical - "Claude → Claude" tells you nothing
 //  about which conversation ate two hours. There is no aw-watcher for Claude
 //  Desktop and no plugin API to write one.
 //
@@ -13,7 +13,7 @@
 //
 //  The DOM here is minified React with no stable hooks, so this runs a
 //  cascade of independent strategies and takes the first plausible answer.
-//  When they all miss it leaves the title alone — a stale title is a much
+//  When they all miss it leaves the title alone - a stale title is a much
 //  smaller problem than a blank one.
 //
 //  Debug from DevTools: window.__ccTitleDebug()
@@ -22,7 +22,7 @@
 const TW_DEFAULT = 'Claude';
 const TW_MAX_LEN = 90;
 
-// Titles that carry no information — never worth overriding the default with.
+// Titles that carry no information - never worth overriding the default with.
 const TW_JUNK = new Set([
   '', 'claude', 'new chat', 'untitled', 'chats', 'projects', 'claude ai',
 ]);
@@ -55,7 +55,7 @@ function twFromSidebar() {
   return el ? twUsable(el.textContent) : '';
 }
 
-// 2. The topbar row workspace.js already keys off — the chat/project name sits
+// 2. The topbar row workspace.js already keys off - the chat/project name sits
 //    in the menu button inside it.
 function twFromTopbar() {
   const rows = document.querySelectorAll('.flex.flex-wrap.gap-g5');

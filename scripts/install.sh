@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Claude Desktop UI Patcher  —  Linux & macOS
+# Claude Desktop UI Patcher  -  Linux & macOS
 #
 # Usage:
 #   bash install.sh            # auto-detect Claude installation
@@ -26,11 +26,11 @@ find_asar() {
     # macOS
     "/Applications/Claude.app/Contents/Resources/app.asar"
     "$HOME/Applications/Claude.app/Contents/Resources/app.asar"
-    # Linux — deb/rpm installs
+    # Linux - deb/rpm installs
     "/usr/lib/claude-desktop/resources/app.asar"
     "/usr/share/claude-desktop/resources/app.asar"
     "/opt/claude-desktop/resources/app.asar"
-    # Linux — user installs / Flatpak unpacked
+    # Linux - user installs / Flatpak unpacked
     "$HOME/.local/lib/claude-desktop/resources/app.asar"
     "$HOME/.local/share/claude-desktop/resources/app.asar"
   )
@@ -137,7 +137,7 @@ elif loader_idx == -1:
     mv = mv[:insert_at] + "\n" + new_loader + ctrlq_block + mv[insert_at:]
     print("  First-time install: added loader + Ctrl+Q blocks.")
 else:
-    # loader exists but no Ctrl+Q — just update the loader
+    # loader exists but no Ctrl+Q - just update the loader
     end = len(mv)
     m = re.search(SOURCEMAP_RE, mv[loader_idx:])
     if m:
@@ -156,7 +156,7 @@ echo "→ Repacking asar..."
 PATCHED="/tmp/claude-ui-patched-$$.asar"
 npx @electron/asar pack "$WORK_DIR" "$PATCHED"
 
-# Write back — may need sudo on macOS if in /Applications
+# Write back - may need sudo on macOS if in /Applications
 if cp "$PATCHED" "$ASAR" 2>/dev/null; then
   echo "✓ Done. Restart Claude Desktop to apply changes."
 else
