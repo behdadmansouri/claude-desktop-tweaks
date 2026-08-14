@@ -9,7 +9,7 @@
 ```
 
 **Do NOT run `claude-quit` automatically (2026-07-10 user instruction).** Build and deploy
-the asar, then tell the user the app needs a manual quit+relaunch to pick it up — let them
+the asar, then tell the user the app needs a manual quit+relaunch to pick it up - let them
 do that themselves rather than killing their running session for them.
 
 ## After renaming/adding/removing AI Projects folders
@@ -75,6 +75,54 @@ GPU when that's genuinely happened (sticky until `CLAUDE_DISABLE_GPU=0`). We rem
 blanket `CLAUDE_DISABLE_GPU=1` from both `.desktop` Exec lines (`~/.local/share/applications/`
 and `~/.config/autostart/`) so hardware acceleration is on by default again, with automatic
 fallback if it actually crashes.
+
+## The official Anthropic app, installed alongside (2026-08-09)
+
+Anthropic's official Linux app is in beta and ships **only** as a Debian/Ubuntu `.deb` from
+`downloads.claude.ai`. It is installed here into a private user prefix so it does not disturb
+the patched build:
+
+```bash
+./scripts/install-official.sh          # install, or upgrade in place; --force to reinstall
+~/.local/bin/claude-desktop-official   # launch (or "Claude (Official)" in the app menu)
+```
+
+Why not a package: `claude-desktop-appimage` declares `provides/conflicts=claude-desktop`, and
+the official `.deb` owns the same `/usr/bin/claude-desktop` and `.desktop` paths. Installing AUR
+`claude-desktop` (which is also stale, 1.24012.9) or `claude-desktop-extra` would **remove the
+patched build**. So the script unpacks only `data.tar.xz` into
+`~/.local/lib/claude-desktop-official/` and drives it with its own launcher. The `.deb`'s
+maintainer scripts are never run -- they register Anthropic's apt repo and install an Ubuntu
+AppArmor profile, neither of which applies here. No sudo, nothing under `/usr` or `/opt`.
+
+Layout gotchas found while writing it:
+- Entrypoint is `usr/lib/claude-desktop/**claude-desktop**` (not `claude`, despite what the
+  `claude-desktop-extra` PKGBUILD comment implies -- that name is specific to their own tarball).
+  Upstream's `/usr/bin/claude-desktop` is just a symlink to it.
+- Upstream's desktop file is `com.anthropic.Claude.desktop` with
+  `StartupWMClass=com.anthropic.Claude` -- distinct from the patched app's `Claude`, so docks
+  group them separately. Our generated entry reuses that WM class.
+- The payload's icon is named `claude-desktop.png`, the same as the patched app's. The script
+  re-installs it as `claude-desktop-official` to avoid the collision.
+- Our entry deliberately omits `MimeType=x-scheme-handler/claude` so `claude://` links keep
+  opening the patched build.
+
+Profile isolation: both apps are Electron appName `Claude` and would both claim
+`~/.config/Claude`. The launcher pins the official one to `~/.config/ClaudeOfficial` via
+`--user-data-dir`. Consequences: a separate sign-in, and MCP servers from
+`claude_desktop_config.json` are not shared.
+
+Not carried over to the official app: the project selector panel and `titlewatch.js`. Its window
+title stays `"Claude"`, so the Timekeeper/ActivityWatch window watcher gets nothing useful from
+it -- only matters if it ever becomes the daily driver.
+
+No auto-update: re-run `install-official.sh`, which resolves the newest version from the repo
+index and exits early when already current. Downloads are cached in
+`~/.cache/claude-desktop-official/`.
+
+Cowork's VM detection probes hardcoded Debian paths in this build too; the symlinks documented
+in `project_cowork_linux_vm_deps.md` were already in place, so Cowork works without extra steps.
+The script checks for them and prints the fix if they're missing.
 
 ## Testing after any change
 
