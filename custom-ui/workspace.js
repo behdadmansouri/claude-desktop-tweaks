@@ -42,8 +42,17 @@ function emojiSuffix(name) {
 // Oversized emoji that does NOT grow the line box: `line-height:0` makes an
 // inline element contribute nothing to the line height, so rows stay the same
 // height as text-only rows no matter how large font-size gets.
+//
+// That trick is right for a NAMED row, where the text sets the row height, and
+// catastrophically wrong for an emoji-only tile, where the emoji is the only
+// child: the button's content box collapsed to zero, leaving a 6px-tall hit
+// target under a 21px glyph. The glyphs painted over each other and nothing was
+// clickable. Emoji-only tiles use TILE_CSS instead, which gives them a real box.
 const EMOJI_CSS = 'font-size:1.5em;line-height:0;display:inline-block;' +
   'vertical-align:-0.08em;flex:none;';
+const TILE_PX = 30;
+const TILE_CSS = 'font-size:19px;line-height:1;display:flex;align-items:center;' +
+  'justify-content:center;width:100%;height:100%;flex:none;';
 
 // Emoji-only mode - show just the emoji for each project, no names.
 const EMOJI_ONLY_KEY = 'cc-ws-emoji-only';
@@ -57,7 +66,29 @@ function ccTodo(folder) {
   return CC_TODOS[folder];
 }
 
-const loadWS = () => { try { return JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; } };
+// Sanitizing on WRITE (added in #21) never helped the entries already sitting
+// in localStorage from before that fix, which is why the bottom of the SSH
+// column kept showing unreadable tofu tiles. Clean on READ as well, and drop
+// anything that has no readable characters left afterwards - a tile whose label
+// is three zero-width spaces is unclickable and un-right-clickable, so it can
+// never be removed through the UI either.
+const hasReadable = s => /[\p{L}\p{N}]/u.test(s || '');
+function loadWS() {
+  let raw;
+  try { raw = JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; }
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  let dropped = false;
+  for (const w of raw) {
+    if (!w || typeof w !== 'object') { dropped = true; continue; }
+    const conn = cleanLabel(w.conn), folder = cleanLabel(w.folder);
+    if (!hasReadable(conn) || !hasReadable(folder)) { dropped = true; continue; }
+    out.push({conn, folder, ts: w.ts || 0});
+  }
+  // Rewrite once so the garbage doesn't have to be re-filtered on every render.
+  if (dropped) { try { localStorage.setItem(WS_KEY, JSON.stringify(out)); } catch {} }
+  return out;
+}
 const saveWS = list => localStorage.setItem(WS_KEY, JSON.stringify(list.slice(0, 40)));
 
 // Labels are scraped from button textContent, which can pick up characters
@@ -156,11 +187,44 @@ async function waitNewMenu(ms = 2500) {
   return items;
 }
 
-function matchFolder(itemText, folder) {
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+// 3 = exact, 2 = one is a prefix of the other, 1 = loose substring, 0 = no.
+//
+// The old version returned a bare boolean with `it.includes(f) || f.includes(it)`
+// and callers took the FIRST menu item that passed. "AI Projects" is a substring
+// of "AI Projects Manager", "Behi Blueprint" of nothing but "Fashion" of
+// "Fashion Archive", and so on - so picking a project could quietly open a
+// different one whose name merely contained it. Scoring plus best-of lets an
+// exact match beat an accidental substring no matter what order the menu is in.
+function matchScore(itemText, folder) {
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const name = folder.split('/').filter(Boolean).pop() || folder;
   const it = norm(itemText), f = norm(name);
-  return it === f || it.includes(f) || f.includes(it);
+  if (!it || !f) return 0;
+  if (it === f) return 3;
+  if (it.startsWith(f) || f.startsWith(it)) return 2;
+  if (it.includes(f) || f.includes(it)) return 1;
+  return 0;
+}
+
+function matchFolder(itemText, folder) {
+  return matchScore(itemText, folder) > 0;
+}
+
+// Best candidate, or null. A merely-substring match (score 1) is only accepted
+// when it is the single candidate in the whole menu - otherwise it is exactly
+// the ambiguity that used to open the wrong project.
+function bestMatch(items, folder, textOf) {
+  let best = null, bestScore = 0, bestCount = 0;
+  for (const el of items) {
+    const s = matchScore(textOf(el), folder);
+    if (s === 0) continue;
+    if (s > bestScore) { best = el; bestScore = s; bestCount = 1; }
+    else if (s === bestScore) bestCount++;
+  }
+  if (!best) return null;
+  if (bestScore === 1 && bestCount > 1) return null;
+  if (bestScore >= 2 && bestCount > 1) console.warn('[cc-ws] ambiguous folder match for', folder);
+  return best;
 }
 
 // Call React's own event handlers via the fiber tree.
@@ -286,11 +350,8 @@ async function clickWorkspace(conn, folder, wsRow) {
     v: i.getAttribute('data-value') || '',
     r: i.getAttribute('role') || '',
   }));
-  const folderTarget = folderItems.find(el => {
-    const val = el.getAttribute('data-value') || el.getAttribute('value') || '';
-    if (val && matchFolder(val, folder)) return true;
-    return matchFolder(el.textContent, folder);
-  });
+  const folderTarget = bestMatch(folderItems, folder,
+    el => el.getAttribute('data-value') || el.getAttribute('value') || el.textContent);
   const dbg = {
     ts: Date.now(), folder, found: !!folderTarget,
     menuTag: menuRoot ? (menuRoot.getAttribute('role') || menuRoot.tagName) : null,
@@ -406,7 +467,7 @@ async function clickWorkspace(conn, folder, wsRow) {
         .filter(i => ACTION_LABELS.test((i.textContent || '').trim()))
         .map(i => i.textContent.trim());
 
-      const exactTarget = entries.find(el => matchFolder(el.textContent, folder));
+      const exactTarget = bestMatch(entries, folder, el => el.textContent);
       dbg.exactMatchFound = !!exactTarget;
       if (exactTarget) {
         if (!tryFiberClick(exactTarget)) fireClick(exactTarget);
@@ -470,14 +531,17 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // Slightly taller than it needs to be on purpose: these are 11px rows in a
   // dense grid, and an extra pixel of padding is the difference between hitting
   // the project you meant and the one below it.
-  b.style.cssText = 'display:flex;align-items:center;gap:5px;text-align:left;' +
-    'padding:3px 6px;border:0;border-radius:4px;background:transparent;color:inherit;' +
-    'font:inherit;font-size:11px;line-height:1.6;cursor:pointer;' +
-    (compact ? 'justify-content:center;width:auto;' : 'width:100%;');
+  b.style.cssText = 'box-sizing:border-box;display:flex;align-items:center;gap:5px;text-align:left;' +
+    'border:0;border-radius:4px;background:transparent;color:inherit;' +
+    'font:inherit;font-size:11px;cursor:pointer;' +
+    (compact
+      // A real square, so the hit target matches the glyph you can see.
+      ? 'padding:0;width:' + TILE_PX + 'px;height:' + TILE_PX + 'px;flex:none;justify-content:center;'
+      : 'padding:3px 6px;line-height:1.6;width:100%;');
 
   if (emoji) {
     const e = document.createElement('span');
-    e.style.cssText = EMOJI_CSS + (compact ? 'font-size:1.9em;' : '');
+    e.style.cssText = compact ? TILE_CSS : EMOJI_CSS;
     e.textContent = emoji;
     b.appendChild(e);
   }
@@ -530,10 +594,14 @@ function folderGrid(conn, folders, wsRow, opts = {}) {
   // Emoji-only tiles are tiny, so pack them densely; named rows get 2 columns
   // once the list is long enough to be worth splitting.
   if (opts.compact) {
-    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:1px 2px;';
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;';
     folders = folders.filter(f => splitEmoji(f.split('/').filter(Boolean).pop() || f).emoji);
   } else if (folders.length > 4) {
-    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:0 6px;';
+    // minmax(0,1fr), not 1fr. A grid item defaults to min-width:auto, so it
+    // refuses to shrink below its content and overflows its track instead -
+    // which is how the Local column's second column ended up painted 96px into
+    // the Remote column. Measured on the real folder list: 14 of 25 rows spilled.
+    grid.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 6px;';
   }
   for (const folder of folders) grid.appendChild(makeFolderBtn(conn, folder, wsRow, opts));
   return grid;
@@ -699,10 +767,69 @@ const COLLAPSE_KEY = 'cc-ws-collapsed';
 const wsCollapsed = () => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } };
 const setWsCollapsed = v => { try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
 
-let _prevTitle = null, _prevBody = null;
+let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null;
+let _prevFolder = null;   // which folder the preview is currently showing
+let _editing = false;
+let _saveTimer = null;
+
+// Rendered view and edit view are two elements in the same slot, so switching
+// between them can't change the pane's geometry (the whole point of #22).
+function setEditing(on) {
+  if (!_prevBody) return;
+  _editing = !!on && !!_prevFolder;
+  _prevBody.style.display = _editing ? 'none' : '';
+  _prevEdit.style.display = _editing ? '' : 'none';
+  _prevBar.editBtn.textContent = _editing ? 'done' : 'edit';
+  _prevBar.editBtn.title = _editing ? 'Stop editing (changes save as you type)' : 'Edit this TODO.md';
+  if (_editing) {
+    _prevEdit.value = ccTodo(_prevFolder) || '';
+    _prevEdit.focus();
+  }
+}
+
+function setSaveState(msg, bad) {
+  if (!_prevBar) return;
+  _prevBar.status.textContent = msg || '';
+  _prevBar.status.style.color = bad ? '#ef4444' : 'inherit';
+}
+
+// Writes through ccBridge.writeTodo -> cc-write-todo ipcMain handler, which is
+// the only process with fs access. Debounced: this fires on every keystroke.
+function saveTodoSoon() {
+  if (!_prevFolder) return;
+  const folder = _prevFolder, text = _prevEdit.value;
+  setSaveState('…');
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
+      setSaveState('no bridge', true);
+      return;
+    }
+    try {
+      const r = await window.ccBridge.writeTodo(folder, text);
+      if (r && r.ok) {
+        // Keep the in-memory copy in step so hovering away and back, or
+        // re-rendering the panel, doesn't resurrect the pre-edit text.
+        if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
+        window.__CC_TODOS__[folder] = text;
+        setSaveState('saved');
+        setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
+      } else {
+        setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
+      }
+    } catch (e) {
+      setSaveState('save failed', true);
+      console.error('[cc-ws] writeTodo', e);
+    }
+  }, 600);
+}
 
 function showTodoPreview(folder) {
   if (!_prevTitle || !_prevBody) return;
+  // Don't yank the pane out from under an in-progress edit just because the
+  // pointer crossed another project on its way to the textarea.
+  if (_editing && folder !== _prevFolder) return;
+  _prevFolder = folder;
   const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
   const text = ccTodo(folder);
   _prevTitle.textContent = name + ' - TODO.md';
@@ -711,6 +838,11 @@ function showTodoPreview(folder) {
   _prevBody.scrollTop = 0;
   if (text) renderMarkdownInto(_prevBody, text);
   else _prevBody.textContent = 'No TODO.md in this folder.';
+  if (_prevBar) {
+    _prevBar.editBtn.style.display = '';
+    _prevBar.openBtn.style.display = '';
+    setSaveState('');
+  }
 }
 
 // Builds the static chrome once. rebuildPanel() only ever refills `list`, so
@@ -763,22 +895,77 @@ function buildShell(panel) {
   const prev = document.createElement('div');
   prev.style.cssText = 'flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;';
 
+  const phead = document.createElement('div');
+  phead.style.cssText = 'flex:none;display:flex;align-items:baseline;gap:6px;margin-bottom:4px;';
+
   const ptitle = document.createElement('div');
-  ptitle.style.cssText = 'flex:none;font-size:10px;font-weight:600;opacity:.55;' +
-    'text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;' +
+  ptitle.style.cssText = 'flex:1;min-width:0;font-size:10px;font-weight:600;opacity:.55;' +
+    'text-transform:uppercase;letter-spacing:.05em;' +
     'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
+  const pstatus = document.createElement('span');
+  pstatus.style.cssText = 'flex:none;font-size:9px;opacity:.6;min-width:30px;text-align:right;';
+
+  const mkAction = (label, title) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;cursor:pointer;' +
+      'font:inherit;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;' +
+      'opacity:.7;padding:1px 3px;border-radius:3px;';
+    b.onmouseenter = () => { b.style.background = 'var(--bg-200,rgba(128,128,128,.18))'; };
+    b.onmouseleave = () => { b.style.background = 'transparent'; };
+    return b;
+  };
+
+  const editBtn = mkAction('edit', 'Edit this TODO.md');
+  editBtn.onclick = e => { e.stopPropagation(); setEditing(!_editing); };
+  // The one-click "open the folder" the panel was missing: ccBridge.openFolder
+  // already existed for this, wired to shell.openPath in the main process.
+  const openBtn = mkAction('open', 'Open this folder in the file manager');
+  openBtn.onclick = e => {
+    e.stopPropagation();
+    if (_prevFolder && window.ccBridge?.openFolder) window.ccBridge.openFolder(_prevFolder);
+  };
+
+  phead.appendChild(ptitle);
+  phead.appendChild(pstatus);
+  phead.appendChild(editBtn);
+  phead.appendChild(openBtn);
+
   const pbody = document.createElement('div');
   pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
     'word-break:break-word;opacity:.85;font-family:inherit;';
 
-  prev.appendChild(ptitle);
+  const pedit = document.createElement('textarea');
+  pedit.spellcheck = false;
+  pedit.style.cssText = 'display:none;box-sizing:border-box;flex:1;min-height:0;width:100%;' +
+    'resize:none;border:1px solid var(--claude-border,rgba(128,128,128,.35));border-radius:5px;' +
+    'padding:6px;background:rgba(255,255,255,.35);color:inherit;' +
+    'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.45;';
+  pedit.oninput = saveTodoSoon;
+  // Keystrokes inside the panel must not reach the app underneath - Claude
+  // binds single-key shortcuts on the document, and typing "n" into a TODO
+  // should not start a new chat.
+  for (const ev of ['keydown', 'keyup', 'keypress']) {
+    pedit.addEventListener(ev, e => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { setEditing(false); showTodoPreview(_prevFolder); }
+    });
+  }
+
+  prev.appendChild(phead);
   prev.appendChild(pbody);
+  prev.appendChild(pedit);
+  _prevEdit = pedit;
+  _prevBar = {wrap: phead, status: pstatus, editBtn, openBtn};
   body.appendChild(list);
   body.appendChild(prev);
   panel.appendChild(head);
   panel.appendChild(body);
 
-  panel._els = {head, htitle, coll, body, list, prev, ptitle, pbody};
+  panel._els = {head, htitle, coll, body, list, prev, phead, ptitle, pbody, pedit};
   _prevTitle = ptitle;
   _prevBody = pbody;
   applyCollapsed(panel);
@@ -816,11 +1003,14 @@ function rebuildPanel() {
   cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
   list.appendChild(cols);
 
-  const seed = L.find(f => ccTodo(f));
+  const seed = _prevFolder || L.find(f => ccTodo(f));
   if (seed) showTodoPreview(seed);
   else {
+    _prevFolder = null;
     _prevTitle.textContent = 'TODO.md';
     _prevBody.textContent = 'Hover a project to preview its TODO.md';
+    // Nothing to edit or open yet, so don't offer to.
+    if (_prevBar) { _prevBar.editBtn.style.display = 'none'; _prevBar.openBtn.style.display = 'none'; }
   }
 
   clampPanel(panel);
@@ -858,7 +1048,11 @@ function installPanel(wsRow) {
   //
   // Sepia rather than near-white: monochrome emoji (☑ ⏱ ✂ …) disappear against
   // #faf9f5 but read clearly against a warm ground.
-  panel.style.cssText = 'position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
+  // box-sizing is explicit because clampPanel sets width/height outright: with
+  // the default content-box the 12px padding and 1px border land OUTSIDE the
+  // computed size, so the box quietly renders 26px wider than the viewport fit
+  // it was just given.
+  panel.style.cssText = 'box-sizing:border-box;position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
     'background:#f2e8d5;' +
     'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
     'border-radius:8px;padding:10px 12px;' +
