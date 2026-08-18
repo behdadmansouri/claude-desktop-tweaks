@@ -31,6 +31,8 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/usage.js"
   printf '\n'
+  cat "$MODULES_DIR/chrome.js"
+  printf '\n'
   cat "$MODULES_DIR/diag.js"
   printf '\n'
   cat "$MODULES_DIR/titlewatch.js"
@@ -136,7 +138,7 @@ expose = (
     "try{_cb.exposeInMainWorld('ccBridge',{"
     "armFolder:function(p){return _ipc.invoke('cc-arm-folder',p);},"
     "openFolder:function(p){return _ipc.invoke('cc-open-folder',p);},"
-    "writeTodo:function(p,t){return _ipc.invoke('cc-write-todo',p,t);}"
+    "writeTodo:function(p,t){return _ipc.invoke('cc-write-todo-v2',p,t);}"
     "});}catch(_){}"
 )
 
@@ -282,27 +284,49 @@ else:
 #    compromised renderer can't turn this into an arbitrary-file-write primitive.
 #    Writes via a temp file + rename so a crash mid-write can't truncate a real
 #    TODO.md. Idempotent, guarded by the channel name.
-if "cc-write-todo" not in ix:
+#
+#    Every overwrite snapshots the PREVIOUS content first, keeping the newest 20
+#    versions per project. Backups live under ~/.config/Claude/todo-backups/
+#    rather than beside the file, so a hidden directory doesn't appear inside
+#    every project (several are git repos). This is an autosaving editor bound
+#    to a debounce timer: "I selected all and typed over it" has to be
+#    recoverable without the user having thought about it in advance.
+BLOCK_A, BLOCK_B = "/*cc-block:write-todo*/", "/*cc-block:write-todo-end*/"
+if BLOCK_A in ix:
+    ix = ix[:ix.index(BLOCK_A)] + ix[ix.index(BLOCK_B) + len(BLOCK_B):]
+    print("  Removed previous cc-write-todo block for replacement")
+if True:
     writer = (
-        ";(function(){try{var _e=require('electron'),fs=require('fs'),"
+        BLOCK_A + ";(function(){try{var _e=require('electron'),fs=require('fs'),"
         "p=require('path'),os=require('os');"
         "var ROOT=p.resolve(p.join(os.homedir(),'Documents','AI Projects'));"
-        "_e.ipcMain.handle('cc-write-todo',function(ev,dir,text){try{"
+        "var BAK=p.join(os.homedir(),'.config','Claude','todo-backups');"
+        "function snap(dir,dest){try{"
+        "if(!fs.existsSync(dest))return;"
+        "var prev=fs.readFileSync(dest,'utf8');"
+        "var slug=p.basename(dir).replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,80)||'root';"
+        "var d=p.join(BAK,slug);fs.mkdirSync(d,{recursive:true});"
+        "var last=fs.readdirSync(d).filter(function(f){return /^TODO\\..*\\.md$/.test(f);}).sort();"
+        "if(last.length&&fs.readFileSync(p.join(d,last[last.length-1]),'utf8')===prev)return;"
+        "fs.writeFileSync(p.join(d,'TODO.'+new Date().toISOString().replace(/[:.]/g,'-')+'.md'),prev,'utf8');"
+        "var all=fs.readdirSync(d).filter(function(f){return /^TODO\\..*\\.md$/.test(f);}).sort();"
+        "while(all.length>20){try{fs.unlinkSync(p.join(d,all.shift()));}catch(_){}}"
+        "}catch(_){}}"
+        "_e.ipcMain.handle('cc-write-todo-v2',function(ev,dir,text){try{"
         "if(typeof dir!=='string'||typeof text!=='string')return{ok:false,error:'bad args'};"
         "if(text.length>200000)return{ok:false,error:'too large'};"
         "var full=p.resolve(dir);"
         "if(full!==ROOT&&full.indexOf(ROOT+p.sep)!==0)return{ok:false,error:'outside AI Projects'};"
         "if(!fs.statSync(full).isDirectory())return{ok:false,error:'not a directory'};"
         "var dest=p.join(full,'TODO.md'),tmp=dest+'.cc-tmp';"
+        "snap(full,dest);"
         "fs.writeFileSync(tmp,text,'utf8');fs.renameSync(tmp,dest);"
         "return{ok:true};}catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
-        "}catch(_){}})();\n"
+        "}catch(_){}})();" + BLOCK_B + "\n"
     )
     ix = ix + writer
     ix_changed = True
-    print("  Appended cc-write-todo ipcMain handler to main bundle")
-else:
-    print("  cc-write-todo ipcMain handler already present in main bundle")
+    print("  Wrote cc-write-todo-v2 ipcMain handler (with backups) to main bundle")
 
 if "cc-open-folder" not in ix:
     opener = (

@@ -771,20 +771,39 @@ let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null;
 let _prevFolder = null;   // which folder the preview is currently showing
 let _editing = false;
 let _saveTimer = null;
+let _preEditText = null;  // in-memory undo for the whole editing session
 
 // Rendered view and edit view are two elements in the same slot, so switching
 // between them can't change the pane's geometry (the whole point of #22).
+// Click the text to edit, click anywhere else to go back to reading it - no
+// edit/done button to hunt for.
 function setEditing(on) {
   if (!_prevBody) return;
-  _editing = !!on && !!_prevFolder;
+  const want = !!on && !!_prevFolder;
+  if (want === _editing) return;
+  _editing = want;
   _prevBody.style.display = _editing ? 'none' : '';
   _prevEdit.style.display = _editing ? '' : 'none';
-  _prevBar.editBtn.textContent = _editing ? 'done' : 'edit';
-  _prevBar.editBtn.title = _editing ? 'Stop editing (changes save as you type)' : 'Edit this TODO.md';
+  _prevBar.revertBtn.style.display = _editing ? '' : 'none';
   if (_editing) {
-    _prevEdit.value = ccTodo(_prevFolder) || '';
+    _preEditText = ccTodo(_prevFolder) || '';
+    _prevEdit.value = _preEditText;
     _prevEdit.focus();
+  } else {
+    // Leaving the editor is a commit point: don't wait out the debounce.
+    flushSave();
+    if (_prevFolder) showTodoPreview(_prevFolder);
   }
+}
+
+// Restores the text as it was when this editing session started. The on-disk
+// backups (see cc-write-todo) cover everything older; this covers the case that
+// actually happens, which is selecting all and typing over it by accident.
+function revertEdit() {
+  if (!_editing || _preEditText == null) return;
+  _prevEdit.value = _preEditText;
+  saveTodoSoon();
+  _prevEdit.focus();
 }
 
 function setSaveState(msg, bad) {
@@ -795,33 +814,44 @@ function setSaveState(msg, bad) {
 
 // Writes through ccBridge.writeTodo -> cc-write-todo ipcMain handler, which is
 // the only process with fs access. Debounced: this fires on every keystroke.
+async function doSave(folder, text) {
+  if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
+    setSaveState('no bridge', true);
+    return;
+  }
+  try {
+    const r = await window.ccBridge.writeTodo(folder, text);
+    if (r && r.ok) {
+      // Keep the in-memory copy in step so hovering away and back, or
+      // re-rendering the panel, doesn't resurrect the pre-edit text.
+      if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
+      window.__CC_TODOS__[folder] = text;
+      setSaveState('saved');
+      setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
+    } else {
+      setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
+    }
+  } catch (e) {
+    setSaveState('save failed', true);
+    console.error('[cc-ws] writeTodo', e);
+  }
+}
+
 function saveTodoSoon() {
   if (!_prevFolder) return;
   const folder = _prevFolder, text = _prevEdit.value;
   setSaveState('…');
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
-      setSaveState('no bridge', true);
-      return;
-    }
-    try {
-      const r = await window.ccBridge.writeTodo(folder, text);
-      if (r && r.ok) {
-        // Keep the in-memory copy in step so hovering away and back, or
-        // re-rendering the panel, doesn't resurrect the pre-edit text.
-        if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
-        window.__CC_TODOS__[folder] = text;
-        setSaveState('saved');
-        setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
-      } else {
-        setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
-      }
-    } catch (e) {
-      setSaveState('save failed', true);
-      console.error('[cc-ws] writeTodo', e);
-    }
-  }, 600);
+  _saveTimer = setTimeout(() => doSave(folder, text), 600);
+}
+
+// Write now rather than in 600ms. Called when the editor closes and on unload,
+// so a pending keystroke can't be lost by clicking away or quitting.
+function flushSave() {
+  if (!_saveTimer || !_prevFolder || !_prevEdit) return;
+  clearTimeout(_saveTimer);
+  _saveTimer = null;
+  doSave(_prevFolder, _prevEdit.value);
 }
 
 function showTodoPreview(folder) {
@@ -839,7 +869,6 @@ function showTodoPreview(folder) {
   if (text) renderMarkdownInto(_prevBody, text);
   else _prevBody.textContent = 'No TODO.md in this folder.';
   if (_prevBar) {
-    _prevBar.editBtn.style.display = '';
     _prevBar.openBtn.style.display = '';
     setSaveState('');
   }
@@ -919,8 +948,9 @@ function buildShell(panel) {
     return b;
   };
 
-  const editBtn = mkAction('edit', 'Edit this TODO.md');
-  editBtn.onclick = e => { e.stopPropagation(); setEditing(!_editing); };
+  const revertBtn = mkAction('revert', 'Put the text back to how it was when you started editing');
+  revertBtn.style.display = 'none';
+  revertBtn.onclick = e => { e.stopPropagation(); revertEdit(); };
   // The one-click "open the folder" the panel was missing: ccBridge.openFolder
   // already existed for this, wired to shell.openPath in the main process.
   const openBtn = mkAction('open', 'Open this folder in the file manager');
@@ -931,12 +961,14 @@ function buildShell(panel) {
 
   phead.appendChild(ptitle);
   phead.appendChild(pstatus);
-  phead.appendChild(editBtn);
+  phead.appendChild(revertBtn);
   phead.appendChild(openBtn);
 
   const pbody = document.createElement('div');
   pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
-    'word-break:break-word;opacity:.85;font-family:inherit;';
+    'word-break:break-word;opacity:.85;font-family:inherit;cursor:text;';
+  pbody.title = 'Click to edit. Click anywhere else to go back to reading.';
+  pbody.onclick = e => { e.stopPropagation(); setEditing(true); };
 
   const pedit = document.createElement('textarea');
   pedit.spellcheck = false;
@@ -959,7 +991,8 @@ function buildShell(panel) {
   prev.appendChild(pbody);
   prev.appendChild(pedit);
   _prevEdit = pedit;
-  _prevBar = {wrap: phead, status: pstatus, editBtn, openBtn};
+  _prevBar = {wrap: phead, status: pstatus, revertBtn, openBtn};
+  installEditExitListeners();
   body.appendChild(list);
   body.appendChild(prev);
   panel.appendChild(head);
@@ -969,6 +1002,26 @@ function buildShell(panel) {
   _prevTitle = ptitle;
   _prevBody = pbody;
   applyCollapsed(panel);
+}
+
+// Click-away closes the editor. Registered once on the document, in the capture
+// phase, so it still fires when the app stops the event on the way up.
+let _editExitInstalled = false;
+function installEditExitListeners() {
+  if (_editExitInstalled) return;
+  _editExitInstalled = true;
+  document.addEventListener('mousedown', e => {
+    if (!_editing) return;
+    const t = e.target;
+    // Anything inside the textarea or the preview header (revert, open) keeps
+    // the editor open; everything else commits and goes back to reading.
+    if (_prevEdit && (t === _prevEdit || _prevEdit.contains(t))) return;
+    if (_prevBar && _prevBar.wrap.contains(t)) return;
+    setEditing(false);
+  }, true);
+  // Quitting or navigating away must not drop an un-flushed keystroke.
+  window.addEventListener('beforeunload', flushSave);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
 }
 
 function applyCollapsed(panel) {
@@ -1010,7 +1063,7 @@ function rebuildPanel() {
     _prevTitle.textContent = 'TODO.md';
     _prevBody.textContent = 'Hover a project to preview its TODO.md';
     // Nothing to edit or open yet, so don't offer to.
-    if (_prevBar) { _prevBar.editBtn.style.display = 'none'; _prevBar.openBtn.style.display = 'none'; }
+    if (_prevBar) _prevBar.openBtn.style.display = 'none';
   }
 
   clampPanel(panel);

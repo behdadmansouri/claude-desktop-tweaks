@@ -815,20 +815,39 @@ let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null;
 let _prevFolder = null;   // which folder the preview is currently showing
 let _editing = false;
 let _saveTimer = null;
+let _preEditText = null;  // in-memory undo for the whole editing session
 
 // Rendered view and edit view are two elements in the same slot, so switching
 // between them can't change the pane's geometry (the whole point of #22).
+// Click the text to edit, click anywhere else to go back to reading it - no
+// edit/done button to hunt for.
 function setEditing(on) {
   if (!_prevBody) return;
-  _editing = !!on && !!_prevFolder;
+  const want = !!on && !!_prevFolder;
+  if (want === _editing) return;
+  _editing = want;
   _prevBody.style.display = _editing ? 'none' : '';
   _prevEdit.style.display = _editing ? '' : 'none';
-  _prevBar.editBtn.textContent = _editing ? 'done' : 'edit';
-  _prevBar.editBtn.title = _editing ? 'Stop editing (changes save as you type)' : 'Edit this TODO.md';
+  _prevBar.revertBtn.style.display = _editing ? '' : 'none';
   if (_editing) {
-    _prevEdit.value = ccTodo(_prevFolder) || '';
+    _preEditText = ccTodo(_prevFolder) || '';
+    _prevEdit.value = _preEditText;
     _prevEdit.focus();
+  } else {
+    // Leaving the editor is a commit point: don't wait out the debounce.
+    flushSave();
+    if (_prevFolder) showTodoPreview(_prevFolder);
   }
+}
+
+// Restores the text as it was when this editing session started. The on-disk
+// backups (see cc-write-todo) cover everything older; this covers the case that
+// actually happens, which is selecting all and typing over it by accident.
+function revertEdit() {
+  if (!_editing || _preEditText == null) return;
+  _prevEdit.value = _preEditText;
+  saveTodoSoon();
+  _prevEdit.focus();
 }
 
 function setSaveState(msg, bad) {
@@ -839,33 +858,44 @@ function setSaveState(msg, bad) {
 
 // Writes through ccBridge.writeTodo -> cc-write-todo ipcMain handler, which is
 // the only process with fs access. Debounced: this fires on every keystroke.
+async function doSave(folder, text) {
+  if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
+    setSaveState('no bridge', true);
+    return;
+  }
+  try {
+    const r = await window.ccBridge.writeTodo(folder, text);
+    if (r && r.ok) {
+      // Keep the in-memory copy in step so hovering away and back, or
+      // re-rendering the panel, doesn't resurrect the pre-edit text.
+      if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
+      window.__CC_TODOS__[folder] = text;
+      setSaveState('saved');
+      setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
+    } else {
+      setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
+    }
+  } catch (e) {
+    setSaveState('save failed', true);
+    console.error('[cc-ws] writeTodo', e);
+  }
+}
+
 function saveTodoSoon() {
   if (!_prevFolder) return;
   const folder = _prevFolder, text = _prevEdit.value;
   setSaveState('…');
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(async () => {
-    if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
-      setSaveState('no bridge', true);
-      return;
-    }
-    try {
-      const r = await window.ccBridge.writeTodo(folder, text);
-      if (r && r.ok) {
-        // Keep the in-memory copy in step so hovering away and back, or
-        // re-rendering the panel, doesn't resurrect the pre-edit text.
-        if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
-        window.__CC_TODOS__[folder] = text;
-        setSaveState('saved');
-        setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
-      } else {
-        setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
-      }
-    } catch (e) {
-      setSaveState('save failed', true);
-      console.error('[cc-ws] writeTodo', e);
-    }
-  }, 600);
+  _saveTimer = setTimeout(() => doSave(folder, text), 600);
+}
+
+// Write now rather than in 600ms. Called when the editor closes and on unload,
+// so a pending keystroke can't be lost by clicking away or quitting.
+function flushSave() {
+  if (!_saveTimer || !_prevFolder || !_prevEdit) return;
+  clearTimeout(_saveTimer);
+  _saveTimer = null;
+  doSave(_prevFolder, _prevEdit.value);
 }
 
 function showTodoPreview(folder) {
@@ -883,7 +913,6 @@ function showTodoPreview(folder) {
   if (text) renderMarkdownInto(_prevBody, text);
   else _prevBody.textContent = 'No TODO.md in this folder.';
   if (_prevBar) {
-    _prevBar.editBtn.style.display = '';
     _prevBar.openBtn.style.display = '';
     setSaveState('');
   }
@@ -963,8 +992,9 @@ function buildShell(panel) {
     return b;
   };
 
-  const editBtn = mkAction('edit', 'Edit this TODO.md');
-  editBtn.onclick = e => { e.stopPropagation(); setEditing(!_editing); };
+  const revertBtn = mkAction('revert', 'Put the text back to how it was when you started editing');
+  revertBtn.style.display = 'none';
+  revertBtn.onclick = e => { e.stopPropagation(); revertEdit(); };
   // The one-click "open the folder" the panel was missing: ccBridge.openFolder
   // already existed for this, wired to shell.openPath in the main process.
   const openBtn = mkAction('open', 'Open this folder in the file manager');
@@ -975,12 +1005,14 @@ function buildShell(panel) {
 
   phead.appendChild(ptitle);
   phead.appendChild(pstatus);
-  phead.appendChild(editBtn);
+  phead.appendChild(revertBtn);
   phead.appendChild(openBtn);
 
   const pbody = document.createElement('div');
   pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
-    'word-break:break-word;opacity:.85;font-family:inherit;';
+    'word-break:break-word;opacity:.85;font-family:inherit;cursor:text;';
+  pbody.title = 'Click to edit. Click anywhere else to go back to reading.';
+  pbody.onclick = e => { e.stopPropagation(); setEditing(true); };
 
   const pedit = document.createElement('textarea');
   pedit.spellcheck = false;
@@ -1003,7 +1035,8 @@ function buildShell(panel) {
   prev.appendChild(pbody);
   prev.appendChild(pedit);
   _prevEdit = pedit;
-  _prevBar = {wrap: phead, status: pstatus, editBtn, openBtn};
+  _prevBar = {wrap: phead, status: pstatus, revertBtn, openBtn};
+  installEditExitListeners();
   body.appendChild(list);
   body.appendChild(prev);
   panel.appendChild(head);
@@ -1013,6 +1046,26 @@ function buildShell(panel) {
   _prevTitle = ptitle;
   _prevBody = pbody;
   applyCollapsed(panel);
+}
+
+// Click-away closes the editor. Registered once on the document, in the capture
+// phase, so it still fires when the app stops the event on the way up.
+let _editExitInstalled = false;
+function installEditExitListeners() {
+  if (_editExitInstalled) return;
+  _editExitInstalled = true;
+  document.addEventListener('mousedown', e => {
+    if (!_editing) return;
+    const t = e.target;
+    // Anything inside the textarea or the preview header (revert, open) keeps
+    // the editor open; everything else commits and goes back to reading.
+    if (_prevEdit && (t === _prevEdit || _prevEdit.contains(t))) return;
+    if (_prevBar && _prevBar.wrap.contains(t)) return;
+    setEditing(false);
+  }, true);
+  // Quitting or navigating away must not drop an un-flushed keystroke.
+  window.addEventListener('beforeunload', flushSave);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
 }
 
 function applyCollapsed(panel) {
@@ -1054,7 +1107,7 @@ function rebuildPanel() {
     _prevTitle.textContent = 'TODO.md';
     _prevBody.textContent = 'Hover a project to preview its TODO.md';
     // Nothing to edit or open yet, so don't offer to.
-    if (_prevBar) { _prevBar.editBtn.style.display = 'none'; _prevBar.openBtn.style.display = 'none'; }
+    if (_prevBar) _prevBar.openBtn.style.display = 'none';
   }
 
   clampPanel(panel);
@@ -2010,6 +2063,109 @@ function dismissLimitNags() {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  WINDOW CHROME
+//  Reclaims the in-app top bar. It holds back/forward (unused), a search
+//  button (there's a shortcut) and the sidebar toggle (unused), so it is ~44px
+//  of pure overhead.
+//
+//  The last attempt at this blanked the entire app (issues-fixed #18): it keyed
+//  on `[data-top-left="true"]`, Claude later reused that attribute on a
+//  container wrapping the whole page, and the hider took the page with it. So
+//  this one does not match on any attribute or class at all.
+//
+//  Three layers of defence instead:
+//    1. GEOMETRY. A candidate must be a full-width strip pinned to the very top
+//       of the viewport, between 20 and 72px tall. A whole-app wrapper is
+//       hundreds of pixels tall and fails immediately.
+//    2. CONTENT. It must not contain the composer, <main>, or more than a token
+//       amount of the page's text.
+//    3. SELF-HEAL. Visible text is measured before and after hiding. If the
+//       page lost most of its content, the hide is reverted on the spot and the
+//       feature disables itself for the session. Getting it wrong now costs a
+//       frame, not a working app.
+//
+//  Off switch, no rebuild needed:  localStorage['cc-hide-topbar'] = '0'
+//
+//  NOTE: this bar is also the window's drag region and carries the
+//  minimise/maximise/close buttons (see issues-fixed #29). Hiding it means the
+//  window has to be moved and closed some other way - the KDE titlebar, or
+//  Ctrl+Q, which the preload already handles.
+// ─────────────────────────────────────────────────────────────
+
+const TOPBAR_KEY = 'cc-hide-topbar';
+const TOPBAR_MIN_H = 20, TOPBAR_MAX_H = 72;
+
+let _topbarHidden = null;   // the element we hid, so it can be put back
+let _topbarGaveUp = false;
+
+const hideTopbarWanted = () => {
+  try { return localStorage.getItem(TOPBAR_KEY) !== '0'; } catch { return true; }
+};
+
+// innerText only counts what is actually visible, so a display:none subtree
+// drops out of it. That gap is exactly what proved "rendered but hidden by us"
+// during the #18 diagnosis, and it is what makes the self-heal check work.
+const visibleTextLen = () => (document.body?.innerText || '').length;
+
+function topbarCandidate() {
+  const vw = window.innerWidth;
+  // Only elements that actually start at the top of the viewport.
+  const seen = new Set();
+  for (const el of document.querySelectorAll('header, nav, div')) {
+    if (seen.size > 400) break;
+    const r = el.getBoundingClientRect();
+    if (r.top > 6 || r.height < TOPBAR_MIN_H || r.height > TOPBAR_MAX_H) continue;
+    if (r.width < vw * 0.6) continue;
+    seen.add(el);
+    // Never a container that holds the app itself.
+    if (el.querySelector('main, textarea, [contenteditable="true"]')) continue;
+    // A real top bar is a handful of icon buttons, not a page of prose.
+    const txt = (el.innerText || '').trim();
+    if (txt.length > 120) continue;
+    if (!el.querySelector('button, [role="button"], a')) continue;
+    return el;
+  }
+  return null;
+}
+
+function applyTopbar() {
+  if (_topbarGaveUp) return;
+  if (!hideTopbarWanted()) {
+    if (_topbarHidden) { _topbarHidden.style.display = ''; _topbarHidden = null; }
+    return;
+  }
+  // React remounts this bar; if our node is gone, look again.
+  if (_topbarHidden && _topbarHidden.isConnected) return;
+  const el = topbarCandidate();
+  if (!el) return;
+
+  const before = visibleTextLen();
+  el.style.display = 'none';
+  const after = visibleTextLen();
+
+  // Losing nearly all visible text means we just hid the app, not a toolbar.
+  if (before > 200 && after < before * 0.35) {
+    el.style.display = '';
+    _topbarGaveUp = true;
+    console.error('[cc-chrome] top-bar hide reverted: visible text fell ' +
+      before + ' -> ' + after + '. Disabled for this session.');
+    return;
+  }
+  _topbarHidden = el;
+  console.log('[cc-chrome] top bar hidden (' + Math.round(el.getBoundingClientRect().height) + 'px reclaimed)');
+}
+
+function installChrome() {
+  window.__ccTopbar = {
+    hide: () => { try { localStorage.setItem(TOPBAR_KEY, '1'); } catch (_) {} _topbarGaveUp = false; applyTopbar(); },
+    show: () => { try { localStorage.setItem(TOPBAR_KEY, '0'); } catch (_) {} applyTopbar(); },
+    candidate: topbarCandidate,
+    hidden: () => _topbarHidden,
+  };
+  applyTopbar();
+}
+
+// ─────────────────────────────────────────────────────────────
 //  DOM BEACON
 //  CDP is still gated behind a signed CLAUDE_CDP_AUTH token (issues-fixed #1),
 //  so there is no way to inspect the live renderer from outside the app. The
@@ -2317,6 +2473,7 @@ function scan() {
   // 2s is the right cadence for a toast: fast enough that it barely registers,
   // slow enough not to be a hot loop.
   try { dismissLimitNags(); } catch (_) {}
+  try { applyTopbar(); } catch (_) {}
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;
@@ -2341,6 +2498,7 @@ function bootstrap() {
   // one IIFE scope, so an exception here would otherwise take the project panel
   // down with it.
   try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
+  try { installChrome(); } catch (e) { console.error('[cc-chrome] install failed', e); }
   try { dgBootstrap(); } catch (e) { console.error('[cc-dump] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});
