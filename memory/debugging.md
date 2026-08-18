@@ -29,6 +29,7 @@ localStorage.getItem('cc-usage-corner')           // br|bl|tr|tl - where the usa
 localStorage.getItem('cc-usage-probe')            // '1' = log candidate usage payloads
 localStorage.getItem('cc-hide-limit-nag')         // '0' = stop dismissing "approaching your limit"
 localStorage.getItem('cc-diag')                   // '0' = stop the automatic [cc-dump] beacon
+localStorage.getItem('cc-hide-topbar')            // '0' = keep the in-app top bar
 ```
 
 Keys from the deleted features (`cc-reset-v1`, `cc-cache-v4`, `cc-ratelimit`, `cc-ring-diag`,
@@ -41,6 +42,8 @@ window.__ccUsage()          // {org, plan, planAgeMs, ctx, failures, corner, ref
 window.__ccUsage().refresh()// force a /usage poll now
 window.__ccTitleDebug()     // which titlewatch strategy is winning
 window.__ccDump()           // one-line DOM survey; also auto-runs 6s after load
+window.__ccTopbar.show()    // put the in-app top bar back
+window.__ccTopbar.candidate()// what the top-bar hider would match right now
 ```
 
 `__ccDump()` writes to `console.error`, so it lands in `claude.ai-web.log`. Read it back with:

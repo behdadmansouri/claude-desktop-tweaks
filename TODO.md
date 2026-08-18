@@ -30,14 +30,11 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## 🤔 Needs your call
 
-- [ ] **Remove the top bar** `M` `think` - user wants the row gone (back/forward unused, magnifier
-      has a shortcut, sidebar toggle unused) to reclaim vertical space. The catch: that row *is*
-      the window's titlebar. It carries the drag region and the minimise/maximise/close controls,
-      so removing it outright leaves no way to move or close the window with the mouse. Three
-      options: hide only the left button cluster (keeps the bar's height, reclaims nothing); shrink
-      the bar; or remove it and re-enable the KDE titlebar instead (the "KDE titlebar no longer
-      hidden" item below is the same knob). Also note #18: a blanket attribute-selector hider on
-      this row blanked the whole app once already.
+- [ ] **Confirm the top bar hider picked the right element** `S` - decided and shipped
+      2026-08-18 (`custom-ui/chrome.js`), but the match was never seen against the live DOM. After
+      a restart check `[cc-chrome]` in the renderer log: "top bar hidden (Npx reclaimed)" is good,
+      "hide reverted" means the geometry match needs tightening against the `[cc-dump]` topBar
+      array. Window drag/close now depend on the KDE titlebar and Ctrl+Q.
 
 - [ ] **KDE titlebar no longer hidden** `S` - a manual System Settings step, not a code change.
       Window Management → Window Rules → Add → focus Claude Desktop → "Detect Window Properties"
