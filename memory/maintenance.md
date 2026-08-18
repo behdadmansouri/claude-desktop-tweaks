@@ -12,6 +12,11 @@
 the asar, then tell the user the app needs a manual quit+relaunch to pick it up - let them
 do that themselves rather than killing their running session for them.
 
+That matters twice over when the agent doing the work is Claude Code running *inside* Claude
+Desktop: quitting the app kills the session mid-task. Running `update-ui.sh` itself is safe -
+since 2026-08-18 it swaps the asar in with a same-directory `mv` rather than `cp`-ing over the
+live file, so the running app keeps the old inode instead of reading half-written mmapped pages.
+
 ## After renaming/adding/removing AI Projects folders
 
 ```bash
