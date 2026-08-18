@@ -1,5 +1,5 @@
 /**
- * Claude Desktop custom UI - v17
+ * Claude Desktop custom UI - v19
  * Generated from custom-ui/ modules by update-ui.sh - do not edit directly.
  */
 (function () {
@@ -54,14 +54,27 @@ const PANEL_CLS = 'cc-ws-panel';
 // below doesn't re-trigger on the same dialog element.
 const _seenDialogs = new WeakSet();
 
-// "⏱️ Time Management" → {emoji:"⏱️", text:"Time Management"}
+// "Time Management ⏱️" or "⏱️ Time Management" → {emoji:"⏱️", text:"Time Management"}
 // Emoji and text are kept separate so the panel can render the emoji in its
 // own span - it gets scaled up (see EMOJI_CSS) to be easier to pick out at a
 // glance, and emoji-only mode drops the text entirely.
+//
+// This used to only look for a LEADING emoji, which is backwards: the workspace
+// naming convention puts it at the END ("Claude Desktop 🤖", "Product Hunt 🛒"),
+// so every folder came back emoji-less and "emoji only" mode silently did
+// nothing at all. Both ends are checked now, suffix first since that is what
+// this workspace actually uses.
+//
+// The candidate run has to contain a real pictograph. Matching "any non-letter"
+// would read the trailing "." of a folder called "v1." - or the leading "." of
+// a dotfile - as an emoji and eat it.
+const PICTO_RE = /\p{Extended_Pictographic}/u;
 function splitEmoji(name) {
-  const m = name.match(/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su);
-  if (!m) return {emoji: '', text: name};
-  return {emoji: m[1].trim(), text: m[2].trimEnd()};
+  const post = name.match(/^(.*?[\p{L}\p{N}])[\s]*([^\p{L}\p{N}\s]+)$/su);
+  if (post && PICTO_RE.test(post[2])) return {emoji: post[2].trim(), text: post[1].trimEnd()};
+  const pre = name.match(/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su);
+  if (pre && PICTO_RE.test(pre[1])) return {emoji: pre[1].trim(), text: pre[2].trimEnd()};
+  return {emoji: '', text: name};
 }
 
 // "⏱️ Time Management" → "Time Management ⏱️" (TODO-preview header)
@@ -498,9 +511,12 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   const b = document.createElement('button');
   b.type = 'button';
   b.title = folder;
+  // Slightly taller than it needs to be on purpose: these are 11px rows in a
+  // dense grid, and an extra pixel of padding is the difference between hitting
+  // the project you meant and the one below it.
   b.style.cssText = 'display:flex;align-items:center;gap:5px;text-align:left;' +
-    'padding:2px 5px;border:0;border-radius:4px;background:transparent;color:inherit;' +
-    'font:inherit;font-size:11px;line-height:1.55;cursor:pointer;' +
+    'padding:3px 6px;border:0;border-radius:4px;background:transparent;color:inherit;' +
+    'font:inherit;font-size:11px;line-height:1.6;cursor:pointer;' +
     (compact ? 'justify-content:center;width:auto;' : 'width:100%;');
 
   if (emoji) {
@@ -536,8 +552,9 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // (e.g. a remote fetch), the hover just starts working. Today
   // __CC_TODOS__/CC_AI_TODOS are only populated for Local (cc-ai-data-v2 reads
   // the local filesystem - see update-ui.sh), so remote entries fall through
-  // to "No TODO.md".
-  if (ccTodo(folder)) b.addEventListener('mouseenter', () => showTodoPreview(folder));
+  // to "No TODO.md". Hooked up unconditionally so a folder without one clears
+  // the pane instead of leaving the previous project's list sitting there.
+  b.addEventListener('mouseenter', () => showTodoPreview(folder));
   return b;
 }
 
@@ -688,54 +705,70 @@ function renderMarkdownInto(el, text) {
   }
 }
 
-let _todoPreviewEl = null;
+
+// ─────────────────────────────────────────────────────────────
+//  PANEL SHELL + GEOMETRY
+//
+//  The panel used to be one absolutely-positioned box, anchored
+//  `bottom:calc(100% + 6px)` on the workspace row, whose height was whatever
+//  its contents happened to be. Both of the things that made it unusable came
+//  straight out of that:
+//
+//   - Jitter. The TODO preview sat UNDER the project rows inside a
+//     bottom-anchored box, so previewing a long TODO grew the box downward-
+//     resistant top edge, i.e. it pushed every project row upward. Moving the
+//     rows out from under the cursor swaps which project is hovered, which
+//     swaps the preview, which moves the rows again. Hovering a list and having
+//     it walk away is exactly that feedback loop.
+//   - Cropping at zoom. Height was clamped to the space above the row. Browser
+//     zoom shrinks the viewport in CSS pixels, so that space collapses and the
+//     panel became a scrolling sliver.
+//
+//  Both are geometry problems, not content problems, so the fix is geometry:
+//  the panel is now a FIXED-size box (width and height computed from the
+//  viewport, never from its contents) with two independently-scrolling panes.
+//  Hovering a project repaints the preview pane and changes nothing else on
+//  screen. When there genuinely isn't room above the row, it stops trying to
+//  fit there and anchors to the viewport instead.
+// ─────────────────────────────────────────────────────────────
+const WS_MARGIN   = 12;   // keep-out from every viewport edge
+const WS_GAP      = 6;    // gap between the panel and the workspace row
+const WS_TARGET_W = 760;
+const WS_TARGET_H = 330;
+const WS_MIN_H    = 210;  // below this, anchoring above the row isn't worth it
+const WS_PREV_W   = 290;  // TODO preview pane
+const WS_STACK_W  = 470;  // narrower than this, stack the panes instead
+
+const COLLAPSE_KEY = 'cc-ws-collapsed';
+const wsCollapsed = () => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } };
+const setWsCollapsed = v => { try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
+
+let _prevTitle = null, _prevBody = null;
+
 function showTodoPreview(folder) {
-  if (!_todoPreviewEl) return;
+  if (!_prevTitle || !_prevBody) return;
   const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
   const text = ccTodo(folder);
-  // firstChild is the header row; its first child is the title span (the
-  // emoji-only toggle is its sibling and must survive the write).
-  _todoPreviewEl.firstChild.firstChild.textContent = name + ' - TODO.md';
-  if (text) renderMarkdownInto(_todoPreviewEl.lastChild, text);
-  else _todoPreviewEl.lastChild.textContent = 'No TODO.md in this folder.';
+  _prevTitle.textContent = name + ' - TODO.md';
+  // The pane keeps its scroll offset between projects; without this a long
+  // previous TODO leaves the next one already scrolled past its own heading.
+  _prevBody.scrollTop = 0;
+  if (text) renderMarkdownInto(_prevBody, text);
+  else _prevBody.textContent = 'No TODO.md in this folder.';
 }
 
-function rebuildPanel() {
-  const panel = document.querySelector('.' + PANEL_CLS);
-  if (!panel?._wsRow) return;
-  const ws = loadWS();
-  const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
-    : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
-    : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
-  // Every non-Local connection we've ever recorded, grouped by host name -
-  // no longer hardcoded to "Myserver".
-  const remote = {};
-  for (const {conn, folder} of ws) {
-    if (!conn || conn === 'Local') continue;
-    (remote[conn] ||= []);
-    if (!remote[conn].includes(folder)) remote[conn].push(folder);
-  }
-
-  panel.innerHTML = '';
-  const cols = document.createElement('div');
-  cols.style.cssText = 'display:flex;gap:4px;';
-  cols.appendChild(buildColumn('Local', L, panel._wsRow));
-  cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
-  panel.appendChild(cols);
-
-  const preview = document.createElement('div');
-  preview.style.cssText = 'margin-top:8px;padding-top:6px;' +
-    'border-top:1px solid var(--claude-border,rgba(128,128,128,.22));';
-
-  const phdr = document.createElement('div');
-  phdr.style.cssText = 'display:flex;align-items:center;gap:8px;' +
+// Builds the static chrome once. rebuildPanel() only ever refills `list`, so
+// the box itself never gets torn down and rebuilt under the cursor.
+function buildShell(panel) {
+  const head = document.createElement('div');
+  head.style.cssText = 'flex:none;display:flex;align-items:center;gap:8px;' +
     'font-size:10px;font-weight:600;opacity:.55;text-transform:uppercase;' +
-    'letter-spacing:.05em;margin-bottom:5px;';
-  // phdr's first child carries the title text (showTodoPreview writes to it);
-  // the emoji-only toggle sits beside it.
-  const ptitle = document.createElement('span');
-  ptitle.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  phdr.appendChild(ptitle);
+    'letter-spacing:.05em;margin-bottom:6px;';
+
+  const htitle = document.createElement('span');
+  htitle.textContent = 'Projects';
+  htitle.style.cssText = 'flex:1;min-width:0;';
+  head.appendChild(htitle);
 
   const toggle = document.createElement('label');
   toggle.style.cssText = 'display:flex;align-items:center;gap:4px;flex:none;cursor:pointer;' +
@@ -749,91 +782,140 @@ function rebuildPanel() {
   toggle.appendChild(cb);
   toggle.appendChild(document.createTextNode('emoji only'));
   toggle.onclick = e => e.stopPropagation();
-  phdr.appendChild(toggle);
+  head.appendChild(toggle);
 
+  // Collapse exists for the zoomed-in case: at 150%+ the panel legitimately
+  // covers most of the window, and you want it out of the way between uses.
+  const coll = document.createElement('button');
+  coll.type = 'button';
+  coll.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;' +
+    'cursor:pointer;font:inherit;font-size:11px;line-height:1;padding:2px 4px;opacity:.8;';
+  coll.onclick = e => {
+    e.stopPropagation();
+    setWsCollapsed(!wsCollapsed());
+    applyCollapsed(panel);
+    clampPanel(panel);
+  };
+  head.appendChild(coll);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'flex:1;display:flex;gap:8px;min-height:0;min-width:0;';
+
+  const list = document.createElement('div');
+  list.style.cssText = 'flex:1 1 auto;min-width:0;overflow:auto;';
+
+  const prev = document.createElement('div');
+  prev.style.cssText = 'flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;';
+
+  const ptitle = document.createElement('div');
+  ptitle.style.cssText = 'flex:none;font-size:10px;font-weight:600;opacity:.55;' +
+    'text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;' +
+    'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   const pbody = document.createElement('div');
-  // Fixed 240px used to push the panel off-screen at high browser zoom (the
-  // panel is anchored above the workspace row, so it grows upward). Cap it
-  // against the viewport instead.
-  pbody.style.cssText = 'margin:0;font-size:11px;line-height:1.4;' +
-    'word-break:break-word;max-height:min(240px,28vh);overflow:auto;opacity:.85;font-family:inherit;';
-  preview.appendChild(phdr);
-  preview.appendChild(pbody);
-  panel.appendChild(preview);
-  _todoPreviewEl = preview;
+  pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
+    'word-break:break-word;opacity:.85;font-family:inherit;';
+
+  prev.appendChild(ptitle);
+  prev.appendChild(pbody);
+  body.appendChild(list);
+  body.appendChild(prev);
+  panel.appendChild(head);
+  panel.appendChild(body);
+
+  panel._els = {head, htitle, coll, body, list, prev, ptitle, pbody};
+  _prevTitle = ptitle;
+  _prevBody = pbody;
+  applyCollapsed(panel);
+}
+
+function applyCollapsed(panel) {
+  const c = wsCollapsed();
+  panel._els.body.style.display = c ? 'none' : 'flex';
+  panel._els.head.style.marginBottom = c ? '0' : '6px';
+  panel._els.coll.textContent = c ? '▸' : '▾';
+  panel._els.coll.title = c ? 'Expand project panel' : 'Collapse project panel';
+}
+
+function rebuildPanel() {
+  const panel = document.querySelector('.' + PANEL_CLS);
+  if (!panel?._wsRow || !panel._els) return;
+  const ws = loadWS();
+  const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
+    : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
+    : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
+  // Every non-Local connection we've ever recorded, grouped by host name -
+  // no longer hardcoded to "Myserver".
+  const remote = {};
+  for (const {conn, folder} of ws) {
+    if (!conn || conn === 'Local') continue;
+    (remote[conn] ||= []);
+    if (!remote[conn].includes(folder)) remote[conn].push(folder);
+  }
+
+  const list = panel._els.list;
+  list.textContent = '';
+  const cols = document.createElement('div');
+  cols.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
+  cols.appendChild(buildColumn('Local', L, panel._wsRow));
+  cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
+  list.appendChild(cols);
 
   const seed = L.find(f => ccTodo(f));
   if (seed) showTodoPreview(seed);
-  else { ptitle.textContent = 'TODO.md'; pbody.textContent = 'Hover a project to preview its TODO.md'; }
+  else {
+    _prevTitle.textContent = 'TODO.md';
+    _prevBody.textContent = 'Hover a project to preview its TODO.md';
+  }
 
   clampPanel(panel);
 }
 
 function removeAllPanels() {
-  document.querySelectorAll('.' + PANEL_CLS).forEach(p => { p._ro?.disconnect(); p.remove(); });
+  document.querySelectorAll('.' + PANEL_CLS).forEach(p => p.remove());
+  _prevTitle = _prevBody = null;
 }
 
-// Records the workspace the row is actually SHOWING, not whatever it shows
-// mid-switch. Switching connection then folder is two async steps: sampling
-// once at a fixed delay could catch the new host paired with the previous
-// (Local) folder, and that bogus pair then sat in the remote column forever,
-// sending clickWorkspace hunting for a local folder on an SSH host. So: take
-// two samples ~700ms apart and only record if they agree with no menu open.
-function readWSLabels(wsRow) {
-  const btns = [...wsRow.querySelectorAll('button[aria-haspopup="menu"]')];
-  if (btns.length < 2) return null;
-  const conn   = cleanLabel(btns[0].querySelector('span')?.textContent);
-  const folder = cleanLabel(btns[1].querySelector('span')?.textContent);
-  return (conn && folder) ? {conn, folder} : null;
-}
-
-function sampleWS(wsRow) {
-  setTimeout(() => {
-    if (!wsRow.isConnected) return;
-    const a = readWSLabels(wsRow);
-    if (!a) return;
-    setTimeout(() => {
-      if (!wsRow.isConnected || document.querySelector(_MENU_SEL)) return;
-      const b = readWSLabels(wsRow);
-      if (b && b.conn === a.conn && b.folder === a.folder) recordWS(b.conn, b.folder);
-    }, 700);
-  }, 400);
+// The panel now lives on document.body (see installPanel), so nothing removes
+// it automatically when its row goes away. Called from the scan loop.
+function prunePanels() {
+  document.querySelectorAll('.' + PANEL_CLS).forEach(p => {
+    if (!p._wsRow || !p._wsRow.isConnected) { p.remove(); _prevTitle = _prevBody = null; }
+    else clampPanel(p);
+  });
 }
 
 function installPanel(wsRow) {
   if (wsRow.dataset.ccRow) return;
   wsRow.dataset.ccRow = '1';
-  wsRow.style.position = 'relative';
   wsRow.addEventListener('click', () => sampleWS(wsRow), true);
   if (location.pathname.includes('/chat/')) return;
+  if (document.querySelector('.' + PANEL_CLS)) return;
+
   const panel = document.createElement('div');
   panel.className = PANEL_CLS;
   panel._wsRow = wsRow;
+  // position:fixed, and parented to <body> rather than to the row. An
+  // absolutely-positioned child inherits its containing block from the nearest
+  // positioned/transformed ancestor, and claude.ai wraps this row in animated
+  // containers - one `transform` anywhere up the tree silently redefines what
+  // "fixed" means. Off the row, off the problem.
+  //
   // Sepia rather than near-white: monochrome emoji (☑ ⏱ ✂ …) disappear against
   // #faf9f5 but read clearly against a warm ground.
-  panel.style.cssText = 'position:absolute;bottom:calc(100% + 6px);left:0;z-index:200;' +
+  panel.style.cssText = 'position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
     'background:#f2e8d5;' +
     'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
     'border-radius:8px;padding:10px 12px;' +
-    'width:min(760px,calc(100vw - 24px));max-width:calc(100vw - 24px);' +
-    'overflow:auto;' +  // max-height is set per-frame by clampPanel
-    'box-shadow:0 4px 20px rgba(0,0,0,.16);font-family:inherit;';
-  wsRow.appendChild(panel);
+    'box-shadow:0 4px 20px rgba(0,0,0,.16);font-family:inherit;color:inherit;' +
+    'overflow:hidden;';  // panes scroll, the box never does
+  document.body.appendChild(panel);
+  buildShell(panel);
   rebuildPanel();
-  // The panel's own size changes without the viewport changing (TODO preview
-  // swap, emoji-only toggle), and those need a re-clamp too.
-  if (typeof ResizeObserver === 'function') {
-    panel._ro = new ResizeObserver(scheduleClamp);
-    panel._ro.observe(panel);
-  }
   installClampListeners();
-  clampPanel(panel);
 }
 
-// Zoom and window resize both move the row and change the viewport, and
-// neither used to re-run clampPanel - the panel kept a stale `left` offset
-// and a max-height that ignored where the row actually sits, so it wandered
-// off-screen. Registered once, coalesced to one clamp per frame.
+// Zoom and window resize both move the row and change the viewport. Coalesced
+// to one clamp per frame across every panel.
 let _clampListeners = false;
 let _clampRaf = 0;
 function scheduleClamp() {
@@ -851,30 +933,752 @@ function installClampListeners() {
   window.visualViewport?.addEventListener('scroll', scheduleClamp);
 }
 
-// The panel is anchored to the workspace row (left:0), so on an indented row -
-// or at high browser zoom, where CSS pixels grow and the viewport shrinks - a
-// full-width panel runs off the right edge. Nudge it back by hand; CSS alone
-// can't express "clamp to viewport" for an absolutely-positioned box whose
-// containing block is off-centre.
+// Sets width/height/top/left outright every time. Nothing here reads the
+// panel's content size, so hovering a project can never move the box.
 function clampPanel(panel) {
-  if (!panel?.isConnected) return;
-  const margin = 12;
+  if (!panel?.isConnected || !panel._els) return;
+  const row = panel._wsRow;
+  if (!row?.isConnected) { panel.remove(); _prevTitle = _prevBody = null; return; }
 
-  // Vertical: the panel grows UPWARD from the row, so the space it has is the
-  // gap between the top of the window and the top of the row - not the whole
-  // viewport height. A fixed calc(100vh - 90px) ignored where the row sits and
-  // let a tall list (or a zoomed-in viewport) push the panel off the top.
-  const rowTop = panel._wsRow?.getBoundingClientRect().top ?? window.innerHeight;
-  const GAP = 6; // matches bottom:calc(100% + 6px)
-  const maxH = Math.max(140, Math.round(rowTop - GAP - margin)) + 'px';
-  if (panel.style.maxHeight !== maxH) panel.style.maxHeight = maxH;
+  const rr = row.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.max(240, Math.min(WS_TARGET_W, vw - 2 * WS_MARGIN));
 
-  panel.style.left = '0px';
-  const r = panel.getBoundingClientRect();
-  let shift = 0;
-  if (r.right > window.innerWidth - margin) shift = window.innerWidth - margin - r.right;
-  if (r.left + shift < margin) shift = margin - r.left;
-  if (shift) panel.style.left = shift + 'px';
+  let left = Math.round(rr.left);
+  if (left + w > vw - WS_MARGIN) left = vw - WS_MARGIN - w;
+  if (left < WS_MARGIN) left = WS_MARGIN;
+
+  panel.style.width = w + 'px';
+  panel.style.left = left + 'px';
+
+  if (wsCollapsed()) {
+    // Height follows the single head row; measure after clearing the override.
+    panel.style.height = 'auto';
+    const h = panel.offsetHeight || 30;
+    let top = Math.round(rr.top) - WS_GAP - h;
+    if (top < WS_MARGIN) top = Math.max(WS_MARGIN, Math.min(vh - WS_MARGIN - h, Math.round(rr.bottom) + WS_GAP));
+    panel.style.top = top + 'px';
+    return;
+  }
+
+  const above = Math.round(rr.top) - WS_GAP - WS_MARGIN;
+  let h, top;
+  if (above >= WS_MIN_H) {
+    h = Math.min(WS_TARGET_H, above);
+    top = Math.round(rr.top) - WS_GAP - h;
+  } else {
+    // Not enough headroom - browser zoom, or a short window. Squeezing into a
+    // 60px sliver is what made it useless; anchor to the viewport and accept
+    // overlapping the row. The collapse chevron is the way out.
+    h = Math.min(WS_TARGET_H, vh - 2 * WS_MARGIN);
+    top = WS_MARGIN;
+  }
+  panel.style.height = h + 'px';
+  panel.style.top = top + 'px';
+
+  // Side-by-side needs real width for both panes; below that, stack them so
+  // the preview stays reachable instead of being dropped. Either way both
+  // dimensions are fixed, so the layout is stable under hover.
+  const {body, list, prev} = panel._els;
+  if (w >= WS_STACK_W) {
+    body.style.flexDirection = 'row';
+    prev.style.width = WS_PREV_W + 'px';
+    prev.style.height = '';
+    prev.style.borderLeft = '1px solid var(--claude-border,rgba(128,128,128,.22))';
+    prev.style.borderTop = '';
+    prev.style.paddingLeft = '8px';
+    prev.style.paddingTop = '';
+    list.style.maxHeight = '';
+  } else {
+    body.style.flexDirection = 'column';
+    prev.style.width = 'auto';
+    prev.style.height = Math.round(h * 0.42) + 'px';
+    prev.style.borderLeft = '';
+    prev.style.borderTop = '1px solid var(--claude-border,rgba(128,128,128,.22))';
+    prev.style.paddingLeft = '';
+    prev.style.paddingTop = '6px';
+    list.style.maxHeight = '';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  USAGE READOUT
+//  Live 5-hour / weekly plan usage + context window, in a fixed corner chip.
+//
+//  The old (2026-07, deleted) usage badges scraped the usage popover's text.
+//  That could never be live: the numbers only exist in the DOM while the
+//  popover is open, so the badge showed whatever it last happened to see, and
+//  the attempt to fix that by auto-opening the popover on a timer is what broke
+//  the effort picker (issues-fixed #13). This version does not read the DOM for
+//  plan usage at all.
+//
+//  Source: the app's OWN endpoint.
+//    GET /api/organizations/<org>/usage
+//      → { five_hour:            {utilization, resets_at},
+//          seven_day:            {...},   seven_day_opus:      {...},
+//          seven_day_sonnet:     {...},   seven_day_oauth_apps:{...},
+//          seven_day_cowork:     {...},   seven_day_omelette:  {...},
+//          omelette_promotional: {...},
+//          extra_usage: {is_enabled, monthly_limit, used_credits, utilization} }
+//
+//  Confirmed by reading the main-process bundle's tray-usage code (search
+//  `[plan-usage]` in .vite/build/index.chunk-*.js): it hits exactly this URL
+//  with `net.fetch` on the default session, on a 300s timer. The renderer
+//  shares that session, so a same-origin credentialed fetch sees the same data.
+//  `utilization` is 0-100. `resets_at` is an ISO timestamp - which is why
+//  nothing on this path has to parse "Resets Wed 1:39 AM". That parsing was the
+//  old badge's other failure mode; parseResetText() below survives only as a
+//  fallback for the DOM-scraped context figure.
+//
+//  Debug from DevTools: window.__ccUsage()
+// ─────────────────────────────────────────────────────────────
+
+const CU_ORG_KEY   = 'cc-usage-org';     // cached organization uuid
+const CU_SNAP_KEY  = 'cc-usage-snap';    // last payload, so a cold start shows something
+const CU_POS_KEY   = 'cc-usage-corner';  // which corner the chip sits in
+const CU_PROBE_KEY = 'cc-usage-probe';   // '1' = log candidate context payloads
+
+const CU_POLL_MS   = 60000;   // steady-state refresh (the app itself uses 300s)
+const CU_TICK_MS   = 20000;   // re-render cadence, so "resets in" counts down
+const CU_STALE_MS  = 15 * 60000;
+
+const CU_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// [key, long label, short label]. Order is the order they appear in the card.
+// Kept in sync with the bundle's own bucket list; unknown keys in the payload
+// are ignored rather than guessed at, and buckets the account doesn't have
+// come back null and are skipped.
+const CU_BUCKETS = [
+  ['five_hour',            '5-hour limit',           '5h'],
+  ['seven_day',            'Weekly · all models',    'wk'],
+  ['seven_day_opus',       'Weekly · Opus',          'opus'],
+  ['seven_day_sonnet',     'Weekly · Sonnet',        'sonnet'],
+  ['seven_day_oauth_apps', 'Weekly · Claude Code',   'code'],
+  ['seven_day_cowork',     'Weekly · Cowork',        'cowork'],
+  ['seven_day_omelette',   'Weekly · Claude Design', 'design'],
+  ['omelette_promotional', 'Claude Design grant',    'grant'],
+];
+
+// The three the chip itself shows, left to right.
+const CU_CHIP = ['ctx', 'five_hour', 'seven_day'];
+
+let cuPlan     = null;   // last parsed /usage payload
+let cuPlanAt   = 0;      // when we got it
+let cuCtx      = null;   // {pct, used, total, at} - context window, DOM/network sourced
+let cuOrg      = null;
+let cuFailures = 0;
+let cuTimer    = null;
+
+// ── formatting ──────────────────────────────────────────────────────────────
+
+// 4h12m / 45m / 2d 3h. Single-unit above a day would round "6d 23h" to "6d",
+// which reads as a whole day of slack that isn't there.
+function cuFmtIn(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const min = Math.max(1, Math.round(ms / 60000));
+  if (min < 60) return min + 'm';
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h < 24) return m ? h + 'h' + m + 'm' : h + 'h';
+  const d = Math.floor(h / 24), rh = h % 24;
+  return rh ? d + 'd ' + rh + 'h' : d + 'd';
+}
+
+function cuPct(v) {
+  if (v == null || !Number.isFinite(v)) return null;
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+// Neutral until it actually matters. Colouring 30% orange just trains you to
+// ignore the colour.
+function cuColor(pct) {
+  if (pct == null) return 'var(--cc-u-dim)';
+  if (pct >= 95) return '#ef4444';
+  if (pct >= 80) return '#f97316';
+  if (pct >= 60) return '#eab308';
+  return 'var(--cc-u-fg)';
+}
+
+// ── reset-time parsing (fallback only) ──────────────────────────────────────
+//
+// The API path never needs this - resets_at is ISO. It exists for text scraped
+// out of the UI, where the wording has changed at least three times already
+// ("Resets Wed 9:59 AM" → "Resets Jun 24" → "resets 59m"). Rather than chase
+// each new spelling, try every shape the app and claude.ai have been observed
+// to use, plus the obvious neighbours, and take the first that parses.
+//
+// Returns an absolute ms timestamp, or null.
+const CU_DOW    = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const CU_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                   'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+// "3", "3:15", "3:15 pm", "15:15" → {h, m} in 24h, or null.
+function cuClock(hStr, mStr, ampm) {
+  let h = +hStr;
+  const m = mStr ? +mStr : 0;
+  if (!Number.isFinite(h) || h > 23 || m > 59) return null;
+  if (ampm) {
+    const pm = /p/i.test(ampm);
+    if (h === 12) h = pm ? 12 : 0;
+    else if (pm) h += 12;
+  }
+  return {h, m};
+}
+
+// Next wall-clock occurrence of h:m, optionally on a named weekday.
+function cuNextAt(h, m, dayHint, now) {
+  const t = new Date(now);
+  t.setHours(h, m, 0, 0);
+  const d = (dayHint || '').toLowerCase();
+  if (!d || d === 'today') {
+    if (t.getTime() <= now) t.setDate(t.getDate() + 1);
+  } else if (d === 'tomorrow' || d === 'tmrw') {
+    t.setDate(t.getDate() + 1);
+  } else {
+    const want = CU_DOW.findIndex(x => d.startsWith(x));
+    if (want === -1) return null;
+    let ahead = want - t.getDay();
+    if (ahead < 0 || (ahead === 0 && t.getTime() <= now)) ahead += 7;
+    t.setDate(t.getDate() + ahead);
+  }
+  return t.getTime();
+}
+
+// "2d 4h 30m", "45 minutes", "3 hrs" → milliseconds.
+function cuDuration(str) {
+  const re = /(\d+(?:\.\d+)?)\s*(d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\b/gi;
+  let total = 0, m;
+  while ((m = re.exec(str))) {
+    const n = parseFloat(m[1]), u = m[2][0].toLowerCase();
+    total += n * (u === 'd' ? 86400000 : u === 'h' ? 3600000 : u === 'm' ? 60000 : 1000);
+  }
+  return total || null;
+}
+
+function parseResetText(str, now) {
+  if (!str || typeof str !== 'string') return null;
+  now = now || Date.now();
+  const s = str.replace(/ /g, ' ').trim();
+  let m;
+
+  // 1. ISO 8601 / RFC 3339, with or without zone. What the API returns.
+  m = s.match(/\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?)\b/);
+  if (m) {
+    const t = Date.parse(m[1].replace(' ', 'T'));
+    if (Number.isFinite(t)) return t;
+  }
+
+  // 2. Epoch seconds/millis, in case a payload ever exposes one raw.
+  m = s.match(/\b(1[0-9]{9}(?:[0-9]{3})?)\b/);
+  if (m) {
+    const n = +m[1];
+    return n > 1e12 ? n : n * 1000;
+  }
+
+  // 3. Relative: "resets in 2h 15m", "in 45 minutes", "· resets 59m", "1h".
+  //    Anchored on "resets"/"in" so a stray "5-hour" can't be read as a delta.
+  m = s.match(/(?:resets?|refreshes?|renews?|available|back)\b[^0-9]{0,12}((?:\d+(?:\.\d+)?\s*(?:d|h|m|s|days?|hours?|hrs?|min(?:ute)?s?|sec(?:ond)?s?)\s*)+)/i)
+   || s.match(/\bin\s+((?:\d+(?:\.\d+)?\s*(?:d|h|m|s|days?|hours?|hrs?|min(?:ute)?s?|sec(?:ond)?s?)\s*)+)/i);
+  if (m) {
+    const d = cuDuration(m[1]);
+    if (d) return now + d;
+  }
+
+  // 4. Weekday/today/tomorrow + clock: "Resets Wed 1:39 AM", "resets tomorrow at 3pm".
+  m = s.match(/(?:resets?|until|at)\b\s*(?:on\s+)?(today|tomorrow|tmrw|sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?,?\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?/i);
+  if (m) {
+    const c = cuClock(m[2], m[3], m[4]);
+    if (c) {
+      const t = cuNextAt(c.h, c.m, m[1], now);
+      if (t) return t;
+    }
+  }
+
+  // 5. Weekday alone: "Resets Wednesday".
+  m = s.match(/resets?\s+(?:on\s+)?(today|tomorrow|tmrw|sun|mon|tue|wed|thu|fri|sat)[a-z]*\b(?!\s*\d)/i);
+  if (m) {
+    const t = cuNextAt(0, 0, m[1], now);
+    if (t) return t;
+  }
+
+  // 6. Month + day (+ optional year/clock): "Resets Jun 24", "Resets June 24 at 9:00 AM".
+  m = s.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?(?:\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i);
+  if (m) {
+    const mon = CU_MONTHS.indexOf(m[1].toLowerCase());
+    const c = m[4] ? cuClock(m[4], m[5], m[6]) : {h: 0, m: 0};
+    if (mon >= 0 && c) {
+      const t = new Date(now);
+      t.setMonth(mon, +m[2]);
+      t.setHours(c.h, c.m, 0, 0);
+      if (m[3]) t.setFullYear(+m[3]);
+      else if (t.getTime() < now - 86400000) t.setFullYear(t.getFullYear() + 1);
+      return t.getTime();
+    }
+  }
+
+  // 7. Numeric date: "resets 6/24", "resets 24/06/2026". Ambiguous by locale,
+  //    so resolve it the way the page would: read it in the browser's own order.
+  m = s.match(/resets?\s+(?:on\s+)?(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?/i);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    // Day-first if the first number can't be a month, or if the locale is.
+    const dayFirst = a > 12 || !/^en-?US?$/i.test(navigator.language || 'en-US');
+    const day = dayFirst ? a : b, mon = (dayFirst ? b : a) - 1;
+    if (mon >= 0 && mon < 12 && day >= 1 && day <= 31) {
+      const t = new Date(now);
+      t.setMonth(mon, day);
+      t.setHours(0, 0, 0, 0);
+      if (m[3]) t.setFullYear(+m[3] < 100 ? 2000 + +m[3] : +m[3]);
+      else if (t.getTime() < now - 86400000) t.setFullYear(t.getFullYear() + 1);
+      return t.getTime();
+    }
+  }
+
+  // 8. Clock only: "Resets at 15:00", "resets at 3pm".
+  m = s.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))\s*(am|pm)?|resets?\s+at\s+(\d{1,2})\s*(am|pm)/i);
+  if (m) {
+    const c = m[1] ? cuClock(m[1], m[2], m[3]) : cuClock(m[4], null, m[5]);
+    if (c) return cuNextAt(c.h, c.m, null, now);
+  }
+
+  return null;
+}
+
+// ── org uuid ────────────────────────────────────────────────────────────────
+
+// The main process reads this from the `lastActiveOrg` cookie. Try the same
+// cookie first (it isn't HttpOnly in practice, but don't rely on that), then a
+// cached value, then ask the API.
+function cuCookieOrg() {
+  try {
+    for (const part of (document.cookie || '').split(';')) {
+      const eq = part.indexOf('=');
+      if (eq === -1) continue;
+      if (part.slice(0, eq).trim() !== 'lastActiveOrg') continue;
+      const m = decodeURIComponent(part.slice(eq + 1)).match(CU_UUID_RE);
+      if (m) return m[0];
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function cuFetchJSON(path) {
+  const r = await fetch(path, {
+    credentials: 'include',
+    headers: {accept: 'application/json'},
+    cache: 'no-store',
+  });
+  if (!r.ok) {
+    const e = new Error('HTTP ' + r.status);
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+async function cuResolveOrg(force) {
+  if (cuOrg && !force) return cuOrg;
+  if (!force) {
+    const cached = (() => { try { return localStorage.getItem(CU_ORG_KEY); } catch (_) { return null; } })();
+    if (cached && CU_UUID_RE.test(cached)) { cuOrg = cached; return cuOrg; }
+  }
+  const fromCookie = cuCookieOrg();
+  if (fromCookie) { cuOrg = fromCookie; }
+  else {
+    const orgs = await cuFetchJSON('/api/organizations');
+    if (!Array.isArray(orgs) || !orgs.length) throw new Error('no organizations');
+    // Prefer an org that can actually chat; some accounts carry API-only orgs.
+    const pick = orgs.find(o => Array.isArray(o.capabilities) && o.capabilities.includes('chat')) || orgs[0];
+    if (!pick || !CU_UUID_RE.test(pick.uuid || '')) throw new Error('no org uuid');
+    cuOrg = pick.uuid;
+  }
+  try { localStorage.setItem(CU_ORG_KEY, cuOrg); } catch (_) {}
+  return cuOrg;
+}
+
+// ── plan usage ──────────────────────────────────────────────────────────────
+
+function cuStoreSnapshot() {
+  try {
+    localStorage.setItem(CU_SNAP_KEY, JSON.stringify({plan: cuPlan, at: cuPlanAt}));
+  } catch (_) {}
+}
+
+function cuLoadSnapshot() {
+  try {
+    const d = JSON.parse(localStorage.getItem(CU_SNAP_KEY) || 'null');
+    if (d && d.plan && typeof d.plan === 'object') { cuPlan = d.plan; cuPlanAt = d.at || 0; }
+  } catch (_) {}
+}
+
+// Accepts a payload from either the poll or the fetch hook.
+function cuAdoptPlan(data) {
+  if (!data || typeof data !== 'object') return false;
+  const known = CU_BUCKETS.some(([k]) => k in data);
+  if (!known && !('extra_usage' in data)) return false;
+  cuPlan = data;
+  cuPlanAt = Date.now();
+  cuFailures = 0;
+  cuStoreSnapshot();
+  cuRender();
+  return true;
+}
+
+async function cuPoll() {
+  if (document.hidden) return;
+  try {
+    const org = await cuResolveOrg(false);
+    cuAdoptPlan(await cuFetchJSON('/api/organizations/' + org + '/usage'));
+  } catch (e) {
+    cuFailures++;
+    // A stale cached org uuid (org switch, re-login) shows up as 401/403/404.
+    // Drop it and let the next tick re-resolve from scratch, once.
+    if (e && (e.status === 401 || e.status === 403 || e.status === 404)) {
+      cuOrg = null;
+      try { localStorage.removeItem(CU_ORG_KEY); } catch (_) {}
+    }
+    if (cuFailures === 1 || cuFailures % 10 === 0) {
+      console.warn('[cc-usage] fetch failed (' + cuFailures + ')', e && e.message);
+    }
+    cuRender();
+  }
+}
+
+function cuSchedule() {
+  if (cuTimer) clearTimeout(cuTimer);
+  // Back off on repeated failure so a logged-out window isn't hammering the
+  // API every minute, but never past 10 minutes.
+  const delay = Math.min(CU_POLL_MS * Math.max(1, Math.min(cuFailures, 10)), 600000);
+  cuTimer = setTimeout(() => { cuPoll().finally(cuSchedule); }, delay);
+}
+
+// ── context window ──────────────────────────────────────────────────────────
+//
+// Unlike plan usage there is no endpoint for this: the context figure is
+// computed client-side and only surfaces in the usage popover. So it is read
+// from the DOM when it happens to be visible, and from any API payload that
+// carries it (see cuNetProbe). It is deliberately NOT refreshed by opening the
+// popover on a timer - that is what broke the effort picker last time.
+function cuSetCtx(pct, used, total) {
+  pct = cuPct(pct);
+  if (pct == null && used != null && total) pct = cuPct(used / total * 100);
+  if (pct == null) return;
+  cuCtx = {pct, used: used ?? null, total: total ?? null, at: Date.now()};
+  cuRender();
+}
+
+// "56.4k / 200.0k (28%)" and friends. Also plain "context 28%".
+const CU_CTX_FRAC = /([\d.]+)\s*([km])?\s*\/\s*([\d.]+)\s*([km])?\s*(?:\((\d{1,3})%\))?/i;
+
+function cuScale(n, suffix) {
+  const v = parseFloat(n);
+  if (!Number.isFinite(v)) return null;
+  const s = (suffix || '').toLowerCase();
+  return s === 'm' ? v * 1e6 : s === 'k' ? v * 1e3 : v;
+}
+
+function cuScanContext() {
+  // 1. Anything that labels itself. aria-label survived several redesigns as
+  //    "Usage: context 28%, plan 7%" before context was dropped from it; if it
+  //    ever comes back this picks it up for free.
+  for (const el of document.querySelectorAll('[aria-label*="ontext" i]')) {
+    const lbl = el.getAttribute('aria-label') || '';
+    const p = lbl.match(/context[^%]{0,60}?(\d{1,3})\s*%/i);
+    if (p) { cuSetCtx(+p[1]); return true; }
+    const f = lbl.match(CU_CTX_FRAC);
+    if (f) { cuSetCtx(f[5] ? +f[5] : null, cuScale(f[1], f[2]), cuScale(f[3], f[4])); return true; }
+  }
+
+  // 2. The usage popover, while it is open. Scoped to open overlay containers
+  //    rather than document.body.innerText - a whole-body innerText read forces
+  //    layout on every call, which is exactly the kind of thing that made the
+  //    renderer unresponsive before (issues-fixed #3).
+  const overlays = document.querySelectorAll(
+    '[role="dialog"],[role="tooltip"],[data-state="open"],[data-radix-popper-content-wrapper]');
+  for (const o of overlays) {
+    if (!o.offsetParent && o.getClientRects().length === 0) continue;
+    const t = o.innerText || '';
+    if (!/context/i.test(t)) continue;
+    const seg = t.slice(t.search(/context/i));
+    const f = seg.match(CU_CTX_FRAC);
+    if (f) { cuSetCtx(f[5] ? +f[5] : null, cuScale(f[1], f[2]), cuScale(f[3], f[4])); return true; }
+    const p = seg.match(/(\d{1,3})\s*%/);
+    if (p) { cuSetCtx(+p[1]); return true; }
+  }
+  return false;
+}
+
+// ── network hook ────────────────────────────────────────────────────────────
+//
+// Two jobs, both cheap:
+//   - adopt any /usage response the app fetches for itself, so the numbers move
+//     the instant the app's own tray refresh lands rather than on our timer;
+//   - notice when a completion finishes and re-poll shortly after, since that
+//     is the only moment usage actually changes.
+// Response bodies are only read for URLs we already expect to be usage JSON.
+// Everything else is a URL check and nothing more.
+let cuBurst = null;
+function cuBurstPoll() {
+  if (cuBurst) return;
+  // Usage is recomputed server-side a beat after the turn ends; one poll at 5s
+  // and one at 25s covers it without turning every message into a poll storm.
+  cuBurst = setTimeout(() => {
+    cuBurst = null;
+    cuPoll();
+    setTimeout(cuPoll, 20000);
+  }, 5000);
+}
+
+function cuProbeLog(url, body) {
+  try {
+    if (localStorage.getItem(CU_PROBE_KEY) !== '1') return;
+    const keys = body && typeof body === 'object' ? Object.keys(body).slice(0, 40) : [];
+    console.log('[cc-usage-probe]', url, keys);
+  } catch (_) {}
+}
+
+function cuNetHook() {
+  const orig = window.fetch;
+  if (typeof orig !== 'function' || orig.__ccUsageHooked) return;
+  const hooked = function (input, init) {
+    const p = orig.apply(this, arguments);
+    let url = '';
+    try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (_) {}
+    if (!url) return p;
+    if (/\/usage(\?|$)/.test(url)) {
+      p.then(res => {
+        if (!res || !res.ok) return;
+        res.clone().json().then(d => { cuProbeLog(url, d); cuAdoptPlan(d); }).catch(() => {});
+      }).catch(() => {});
+    } else if (/\/completion|\/retry_completion/.test(url)) {
+      p.then(() => cuBurstPoll()).catch(() => {});
+    }
+    return p;
+  };
+  hooked.__ccUsageHooked = true;
+  try { window.fetch = hooked; } catch (_) {}
+}
+
+// ── chip ────────────────────────────────────────────────────────────────────
+
+const CU_CORNERS = ['br', 'bl', 'tr', 'tl'];
+
+function cuCorner() {
+  try {
+    const v = localStorage.getItem(CU_POS_KEY);
+    if (CU_CORNERS.includes(v)) return v;
+  } catch (_) {}
+  return 'br';
+}
+
+function cuInjectCSS() {
+  if (document.getElementById('cc-usage-css')) return;
+  const s = document.createElement('style');
+  s.id = 'cc-usage-css';
+  s.textContent = [
+    ':root{--cc-u-bg:#f2e8d5;--cc-u-fg:#2b2418;--cc-u-dim:rgba(43,36,24,.42);--cc-u-line:rgba(0,0,0,.16);}',
+    '@media (prefers-color-scheme:dark){:root{--cc-u-bg:#2e2919;--cc-u-fg:#ece5d5;--cc-u-dim:rgba(236,229,213,.42);--cc-u-line:rgba(255,255,255,.14);}}',
+    // The wrapper spans the corner but must never eat clicks meant for the app;
+    // only the chip itself is interactive.
+    '#cc-usage{position:fixed;z-index:2147483000;pointer-events:none;font-family:inherit;' +
+      'font-variant-numeric:tabular-nums;letter-spacing:-.01em;}',
+    '#cc-usage[data-corner="br"]{right:10px;bottom:10px;}',
+    '#cc-usage[data-corner="bl"]{left:10px;bottom:10px;}',
+    '#cc-usage[data-corner="tr"]{right:10px;top:10px;}',
+    '#cc-usage[data-corner="tl"]{left:10px;top:10px;}',
+    '.cc-u-chip{pointer-events:auto;display:inline-flex;align-items:center;gap:9px;' +
+      'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
+      'border-radius:7px;padding:3px 8px;font-size:10.5px;line-height:1.5;cursor:pointer;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:.55;transition:opacity .12s;user-select:none;}',
+    '#cc-usage:hover .cc-u-chip{opacity:1;}',
+    '.cc-u-chip .k{opacity:.55;font-weight:600;}',
+    '.cc-u-chip .v{font-weight:700;}',
+    '.cc-u-chip .r{opacity:.5;}',
+    '.cc-u-card{pointer-events:none;display:none;position:absolute;min-width:230px;' +
+      'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
+      'border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.5;' +
+      'box-shadow:0 6px 24px rgba(0,0,0,.22);}',
+    '#cc-usage:hover .cc-u-card{display:block;}',
+    '#cc-usage[data-corner="br"] .cc-u-card,#cc-usage[data-corner="bl"] .cc-u-card{bottom:calc(100% + 6px);}',
+    '#cc-usage[data-corner="tr"] .cc-u-card,#cc-usage[data-corner="tl"] .cc-u-card{top:calc(100% + 6px);}',
+    '#cc-usage[data-corner="br"] .cc-u-card,#cc-usage[data-corner="tr"] .cc-u-card{right:0;}',
+    '#cc-usage[data-corner="bl"] .cc-u-card,#cc-usage[data-corner="tl"] .cc-u-card{left:0;}',
+    '.cc-u-row{display:flex;align-items:baseline;gap:8px;}',
+    '.cc-u-row .l{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.8;}',
+    '.cc-u-bar{height:3px;border-radius:2px;background:var(--cc-u-line);margin:1px 0 4px;overflow:hidden;}',
+    '.cc-u-bar>i{display:block;height:100%;border-radius:2px;}',
+    '.cc-u-foot{margin-top:5px;padding-top:4px;border-top:1px solid var(--cc-u-line);' +
+      'font-size:9.5px;opacity:.5;}',
+  ].join('\n');
+  document.head.appendChild(s);
+}
+
+let cuRoot = null, cuChipEl = null, cuCardEl = null;
+
+function cuInstall() {
+  if (cuRoot && cuRoot.isConnected) return;
+  cuInjectCSS();
+  cuRoot = document.createElement('div');
+  cuRoot.id = 'cc-usage';
+  cuRoot.dataset.corner = cuCorner();
+  cuChipEl = document.createElement('div');
+  cuChipEl.className = 'cc-u-chip';
+  cuChipEl.title = 'Claude usage - click to move to the next corner';
+  cuChipEl.onclick = () => {
+    const next = CU_CORNERS[(CU_CORNERS.indexOf(cuRoot.dataset.corner) + 1) % CU_CORNERS.length];
+    cuRoot.dataset.corner = next;
+    try { localStorage.setItem(CU_POS_KEY, next); } catch (_) {}
+  };
+  cuCardEl = document.createElement('div');
+  cuCardEl.className = 'cc-u-card';
+  cuRoot.appendChild(cuChipEl);
+  cuRoot.appendChild(cuCardEl);
+  document.body.appendChild(cuRoot);
+}
+
+function cuBucket(key) {
+  if (key === 'ctx') {
+    return cuCtx ? {pct: cuCtx.pct, resetMs: null} : null;
+  }
+  const b = cuPlan && cuPlan[key];
+  if (!b || b.utilization == null) return null;
+  const t = b.resets_at ? Date.parse(b.resets_at) : NaN;
+  return {pct: cuPct(b.utilization), resetMs: Number.isFinite(t) ? t : null};
+}
+
+function cuItem(short, pct, resetMs) {
+  const k = document.createElement('span');
+  k.className = 'k';
+  k.textContent = short;
+  const v = document.createElement('span');
+  v.className = 'v';
+  v.textContent = pct == null ? '--' : pct + '%';
+  v.style.color = cuColor(pct);
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'display:inline-flex;gap:3px;align-items:baseline;';
+  wrap.appendChild(k);
+  wrap.appendChild(v);
+  const left = resetMs == null ? null : cuFmtIn(resetMs - Date.now());
+  if (left) {
+    const r = document.createElement('span');
+    r.className = 'r';
+    r.textContent = left;
+    wrap.appendChild(r);
+  }
+  return wrap;
+}
+
+function cuRender() {
+  if (!cuRoot || !cuRoot.isConnected) return;
+
+  cuChipEl.textContent = '';
+  for (const key of CU_CHIP) {
+    const short = key === 'ctx' ? 'ctx' : (CU_BUCKETS.find(b => b[0] === key) || [, , key])[2];
+    const b = cuBucket(key);
+    cuChipEl.appendChild(cuItem(short, b ? b.pct : null, b ? b.resetMs : null));
+  }
+
+  cuCardEl.textContent = '';
+  const addRow = (label, pct, resetMs, extra) => {
+    const row = document.createElement('div');
+    row.className = 'cc-u-row';
+    const l = document.createElement('span');
+    l.className = 'l';
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.style.cssText = 'font-weight:700;color:' + cuColor(pct);
+    v.textContent = pct == null ? '--' : pct + '%';
+    row.appendChild(l);
+    row.appendChild(v);
+    const left = resetMs == null ? null : cuFmtIn(resetMs - Date.now());
+    if (left || extra) {
+      const r = document.createElement('span');
+      r.style.cssText = 'opacity:.5;min-width:44px;text-align:right;';
+      r.textContent = extra || left;
+      row.appendChild(r);
+    }
+    cuCardEl.appendChild(row);
+    const bar = document.createElement('div');
+    bar.className = 'cc-u-bar';
+    const fill = document.createElement('i');
+    fill.style.width = (pct == null ? 0 : pct) + '%';
+    fill.style.background = cuColor(pct);
+    bar.appendChild(fill);
+    cuCardEl.appendChild(bar);
+  };
+
+  if (cuCtx) {
+    const detail = cuCtx.total
+      ? Math.round(cuCtx.used / 1000) + 'k/' + Math.round(cuCtx.total / 1000) + 'k'
+      : null;
+    addRow('Context window', cuCtx.pct, null, detail);
+  } else {
+    addRow('Context window', null, null, 'n/a');
+  }
+
+  let any = false;
+  for (const [key, label] of CU_BUCKETS) {
+    const b = cuBucket(key);
+    if (!b) continue;
+    any = true;
+    addRow(label, b.pct, b.resetMs);
+  }
+
+  const ex = cuPlan && cuPlan.extra_usage;
+  if (ex && ex.is_enabled) {
+    const detail = ex.monthly_limit != null
+      ? (ex.used_credits ?? 0) + '/' + ex.monthly_limit : null;
+    addRow('Extra usage', cuPct(ex.utilization), null, detail);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'cc-u-foot';
+  if (!cuPlanAt) {
+    foot.textContent = cuFailures ? 'no usage data (' + cuFailures + ' failed fetches)' : 'loading…';
+  } else {
+    const age = Date.now() - cuPlanAt;
+    foot.textContent = 'updated ' + (age < 60000 ? 'just now' : cuFmtIn(age) + ' ago') +
+      (age > CU_STALE_MS ? ' · stale' : '') +
+      (any ? '' : ' · no plan buckets');
+  }
+  cuCardEl.appendChild(foot);
+}
+
+// ── bootstrap ───────────────────────────────────────────────────────────────
+
+let cuStarted = false;
+function installUsage() {
+  if (cuStarted) return;
+  cuStarted = true;
+  cuLoadSnapshot();
+  cuNetHook();
+  cuInstall();
+  cuRender();
+  cuPoll().finally(cuSchedule);
+
+  // Re-render (not re-fetch) so "resets in" counts down, and re-scan for the
+  // context figure in case a popover opened since the last tick.
+  setInterval(() => {
+    if (document.hidden) return;
+    if (!cuRoot || !cuRoot.isConnected) cuInstall();
+    try { cuScanContext(); } catch (_) {}
+    cuRender();
+  }, CU_TICK_MS);
+
+  // Coming back to the window is the one moment a stale number is most visible.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) cuPoll(); });
+  window.addEventListener('focus', () => {
+    if (Date.now() - cuPlanAt > 30000) cuPoll();
+  });
+
+  window.__ccUsage = function () {
+    return {
+      org: cuOrg, plan: cuPlan, planAgeMs: cuPlanAt ? Date.now() - cuPlanAt : null,
+      ctx: cuCtx, failures: cuFailures, corner: cuRoot && cuRoot.dataset.corner,
+      refresh: () => cuPoll(),
+      probe: on => { try { localStorage.setItem(CU_PROBE_KEY, on ? '1' : '0'); } catch (_) {} },
+      parseResetText,
+    };
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1049,6 +1853,8 @@ if (!document.documentElement || document.readyState === 'loading') {
 //  rate-limit, chat numbers, banners, floating bar, topbar shortcuts,
 //  WCO patch) was dead code behind disabled calls and has been removed.
 //  See memory/features.md for what used to be here.
+//  2026-08-18: usage is back (usage.js), rebuilt on the app's own
+//  /api/organizations/<org>/usage endpoint rather than on popover scraping.
 // ─────────────────────────────────────────────────────────────
 let lastPath = '';
 
@@ -1056,6 +1862,9 @@ function scan() {
   document.querySelectorAll('.flex.flex-wrap.gap-g5').forEach(row => {
     if (row.querySelector('button[aria-haspopup="menu"]')) installPanel(row);
   });
+  // The panel lives on <body> now, so nothing tears it down when its row goes;
+  // this also re-clamps it against a row that has moved (sidebar toggle).
+  prunePanels();
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;
@@ -1076,6 +1885,10 @@ function debouncedScan() {
 function bootstrap() {
   if (!document.documentElement) { setTimeout(bootstrap, 100); return; }
   injectBaseCSS();
+  // Wrapped: the usage readout talks to the network and the two features share
+  // one IIFE scope, so an exception here would otherwise take the project panel
+  // down with it.
+  try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});
   setInterval(scan, 2000);

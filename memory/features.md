@@ -14,6 +14,12 @@ staleness warning.
 | **Workspace folder click** | Arms path via `ccBridge.armFolder(path)`; patched `browseFolder` in the main bundle returns it without an OS dialog. |
 | **TODO.md previews** | Panel renders each folder's `TODO.md` as markdown on hover; live via `cc-ai-data-v2`, baked fallback via `CC_AI_TODOS`. |
 | **Ctrl+Q quit** | Clean shutdown via IPC (channel UUID extracted dynamically at patch time - see `memory/maintenance.md`). Preload-level, not in `custom-ui/`. |
+| **Usage readout** (2026-08-18) | Fixed corner chip: context %, 5-hour %, weekly %, each with time-to-reset. Hover for every bucket the account has. Polls `/api/organizations/<org>/usage` (see [architecture.md](architecture.md#plan-usage-endpoint-2026-08-18-discovery)), so it is genuinely live rather than a snapshot of whatever the popover last showed. `custom-ui/usage.js` |
+
+**Usage caveat:** the plan numbers are API-sourced and always current. The **context window**
+figure has no endpoint - it is only in the popover DOM - so the chip shows `ctx --` until a
+popover happens to expose it. Set `localStorage['cc-usage-probe']='1'` to log candidate API
+payloads while hunting for a better source.
 
 ## Removed 2026-07-12 (verified dead - every call site was already commented out)
 
@@ -21,9 +27,12 @@ Usage badges, Ctrl+O/Ctrl+Shift+L/Ctrl+Shift+R/Ctrl+W/Alt+1-9/Ctrl+1-2-3 shortcu
 badges, cache ring, rate-limit ring, pin chats, startup popup auto-dismiss, "model unavailable"
 banner hider, code tab auto-select, floating usage bar, top-bar padding-collapse CSS +
 `patchWCOHeight()` (also independently obsolete post-v3.0.0-rebase - no WCO shim left to patch).
-Deleted files: `sidebar.js`, `fbar.js`, `topbar.js`, `usage.js`, `banners.js`. If any of these
-need to come back, they're in git history (see `git log -- custom-ui/`), not worth resurrecting
-speculatively.
+Deleted files: `sidebar.js`, `fbar.js`, `topbar.js`, `usage.js`, `banners.js`.
+
+The old `usage.js` was never committed (it only ever existed inside the built `custom-ui.js`, see
+`git show 0f88b61:custom-ui.js`). The 2026-08-18 `usage.js` is a **rewrite, not a restore** - the
+old one scraped the popover and could not be live by construction. Nothing else on that list is
+worth resurrecting speculatively.
 
 ## Not Yet Implemented
 

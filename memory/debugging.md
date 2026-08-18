@@ -19,12 +19,25 @@
 ## Persisted state (localStorage)
 
 ```js
-JSON.parse(localStorage.getItem('cc-reset-v1'))   // reset times {hourly: ms, weekly: ms}
-JSON.parse(localStorage.getItem('cc-cache-v4'))   // warm-cache chat titles + timestamps
-JSON.parse(localStorage.getItem('cc-ratelimit'))  // rate-limited chat titles
-JSON.parse(localStorage.getItem('cc-ring-diag'))  // one-time cache/ratelimit ring scan results
+JSON.parse(localStorage.getItem('cc-ws-v4'))      // recorded conn/folder workspace pairs
 JSON.parse(localStorage.getItem('cc-ws-debug'))   // last workspace folder click attempt
-localStorage.getItem('cc-debug')                  // topbar detection strategy
+localStorage.getItem('cc-ws-emoji-only')          // '1' = emoji-only project tiles
+localStorage.getItem('cc-ws-collapsed')           // '1' = project panel collapsed to its header
+JSON.parse(localStorage.getItem('cc-usage-snap')) // last /usage payload {plan, at}
+localStorage.getItem('cc-usage-org')              // cached organization uuid
+localStorage.getItem('cc-usage-corner')           // br|bl|tr|tl - where the usage chip sits
+localStorage.getItem('cc-usage-probe')            // '1' = log candidate usage payloads
+```
+
+Keys from the deleted features (`cc-reset-v1`, `cc-cache-v4`, `cc-ratelimit`, `cc-ring-diag`,
+`cc-debug`) may still be sitting in localStorage; nothing reads them since the 2026-07-12 trim.
+
+## Debug hooks (DevTools console)
+
+```js
+window.__ccUsage()          // {org, plan, planAgeMs, ctx, failures, corner, refresh(), probe(bool)}
+window.__ccUsage().refresh()// force a /usage poll now
+window.__ccTitleDebug()     // which titlewatch strategy is winning
 ```
 
 ## Clearing UI state

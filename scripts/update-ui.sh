@@ -23,11 +23,13 @@ MODULES_DIR="$PROJECT_DIR/custom-ui"
 # Build combined custom-ui.js from individual module files.
 echo "→ Building custom-ui.js from modules..."
 {
-  printf '/**\n * Claude Desktop custom UI - v18\n * Generated from custom-ui/ modules by update-ui.sh - do not edit directly.\n */\n'
+  printf '/**\n * Claude Desktop custom UI - v19\n * Generated from custom-ui/ modules by update-ui.sh - do not edit directly.\n */\n'
   printf '(function () {\n'"'"'use strict'"'"';\n\n'
   cat "$MODULES_DIR/css.js"
   printf '\n'
   cat "$MODULES_DIR/workspace.js"
+  printf '\n'
+  cat "$MODULES_DIR/usage.js"
   printf '\n'
   cat "$MODULES_DIR/titlewatch.js"
   printf '\n'
@@ -295,6 +297,11 @@ node --check "$MAIN_BUNDLE"
 
 echo "→ Repacking asar..."
 npx @electron/asar pack "$EXTRACT" /tmp/claude-ui-patched.asar
-cp /tmp/claude-ui-patched.asar "$ASAR"
+# Swap it in with a same-directory rename rather than copying over the live
+# file. Electron mmaps the asar, so truncating it under a RUNNING app corrupts
+# the pages it is still reading and can take the app down mid-write. A rename
+# leaves the old inode intact for anything that still has it open.
+cp /tmp/claude-ui-patched.asar "$ASAR.new"
+mv -f "$ASAR.new" "$ASAR"
 
 echo "✓ Done. Restart Claude Desktop to apply changes."

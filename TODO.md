@@ -12,6 +12,13 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       `claude-desktop-extra` is 1.30096.1. Pick a new base and rework the script:
       [memory/maintenance.md](memory/maintenance.md) has the option comparison.
 
+- [ ] **Usage chip shows `ctx --`** `M` - the 5-hour and weekly numbers are live off
+      `/api/organizations/<org>/usage`, but the context window has no endpoint and is only in the
+      usage popover's DOM, so it reads as unknown most of the time. Next step: run with
+      `localStorage['cc-usage-probe']='1'` and watch `[cc-usage-probe]` in the console for an API
+      payload that carries a token count. Do **not** re-add a timer that opens the popover
+      ([issues-fixed.md](memory/issues-fixed.md) #13).
+
 - [ ] **Duplicate "close right bar" buttons in Cowork** `M` - two floating close buttons appear
       at once. Needs live DOM inspection (devtools or a screenshot) before any fix; no blind
       selector guess, given how fragile the hiders have been ([issues-fixed.md](memory/issues-fixed.md) #18).

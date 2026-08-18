@@ -5,6 +5,8 @@
 //  rate-limit, chat numbers, banners, floating bar, topbar shortcuts,
 //  WCO patch) was dead code behind disabled calls and has been removed.
 //  See memory/features.md for what used to be here.
+//  2026-08-18: usage is back (usage.js), rebuilt on the app's own
+//  /api/organizations/<org>/usage endpoint rather than on popover scraping.
 // ─────────────────────────────────────────────────────────────
 let lastPath = '';
 
@@ -12,6 +14,9 @@ function scan() {
   document.querySelectorAll('.flex.flex-wrap.gap-g5').forEach(row => {
     if (row.querySelector('button[aria-haspopup="menu"]')) installPanel(row);
   });
+  // The panel lives on <body> now, so nothing tears it down when its row goes;
+  // this also re-clamps it against a row that has moved (sidebar toggle).
+  prunePanels();
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;
@@ -32,6 +37,10 @@ function debouncedScan() {
 function bootstrap() {
   if (!document.documentElement) { setTimeout(bootstrap, 100); return; }
   injectBaseCSS();
+  // Wrapped: the usage readout talks to the network and the two features share
+  // one IIFE scope, so an exception here would otherwise take the project panel
+  // down with it.
+  try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});
   setInterval(scan, 2000);

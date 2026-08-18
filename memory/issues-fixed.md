@@ -1,6 +1,7 @@
 # Known Issues - Fixed
 
-Full bug history with root causes. For the current state of features, see [TODO.md](../TODO.md).
+Full bug history with root causes (#1-25). For the current state of features, see
+[TODO.md](../TODO.md).
 
 ---
 
@@ -265,3 +266,98 @@ wouldn't remove it). Real SSH folders live under `/root/000_myagents/...`, confi
 
 **Lesson:** scraping UI labels on a timer records transitional states. Sample twice and require
 agreement, or don't record at all.
+
+---
+
+## 22. Panel jittered under the cursor while hovering projects (2026-08-18)
+
+**Symptom:** "the project selector changes its height based on the height of the to do file, and
+it causes jitter when I'm hovering over the different projects. And sometimes I can't select the
+one I want."
+
+**Root cause:** geometry, not the preview. The panel was one absolutely-positioned box anchored
+`bottom:calc(100% + 6px)` with content-derived height, and the TODO preview sat *below* the
+project rows inside it. Bottom-anchored + taller content = the top edge moves up, so the project
+rows move up too. That slides a different project under a stationary cursor, which swaps the
+preview, which resizes the panel again. A hover feedback loop, and the reason a click sometimes
+landed on the neighbouring project.
+
+**Fix:** the panel is now a fixed-size box (width and height computed from the viewport in
+`clampPanel`, never from content) split into two independently-scrolling panes - project list
+left, TODO preview right. Hovering repaints the preview pane and moves nothing. Under ~470px of
+width the panes stack instead of the preview being dropped, and both dimensions stay fixed.
+`prev.scrollTop = 0` on each preview swap, since the pane otherwise keeps the previous project's
+scroll offset.
+
+**Lesson:** if hovering a list moves the list, the bug is in the box, not in what fills it.
+
+---
+
+## 23. "emoji only" mode did nothing at all (2026-08-18)
+
+**Symptom:** ticking the checkbox had no visible effect.
+
+**Root cause:** `splitEmoji()` only matched a **leading** emoji
+(`/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su`), but this workspace's folder-naming convention puts it
+at the **end** ("Claude Desktop 🤖", "Product Hunt 🛒" - see `memory/reference_folder_naming.md`
+in the root workspace). So every folder came back `{emoji:''}`, `buildColumn`'s
+`folders.some(f => …emoji)` guard was always false, `compact` never turned on, and the toggle
+flipped a flag nothing read. Issue #19 fixed the *layout* of emoji-only mode without noticing the
+detector had never matched a single real folder.
+
+**Fix:** `splitEmoji()` checks the suffix first, then the prefix. The candidate run must contain a
+`\p{Extended_Pictographic}` character, so a folder named `v1.` doesn't get its trailing period
+eaten as an emoji.
+
+**Lesson:** a guard clause that silently disables a feature when its detector returns nothing
+looks identical to the feature being off. Test the detector against the real data, not against
+the example in the comment.
+
+---
+
+## 24. Panel cropped to a useless sliver at browser zoom (2026-08-18)
+
+**Symptom:** "when I zoom the project selector gets cropped, and I can't do everything in it. And
+it becomes useless."
+
+**Root cause:** #20's fix. Capping `max-height` to the space above the workspace row is correct
+while there *is* space above the row, but browser zoom shrinks the viewport in CSS pixels, so that
+space collapses toward zero and the clamp faithfully squeezed the panel into a scrolling sliver.
+
+**Fix:** `clampPanel` now has two modes. With >= 210px of headroom it anchors above the row as
+before. Below that it stops respecting the row entirely and anchors to the viewport (top margin,
+up to `100vh - 24px`), accepting that it overlaps the row. A collapse chevron in the panel header
+(persisted in `cc-ws-collapsed`) is the way to get it out of the way. The panel is also
+`position:fixed` on `<body>` now rather than absolute inside the row - a single `transform` on any
+ancestor would otherwise redefine its containing block.
+
+**Lesson:** "clamp to the available space" and "the available space is about to be zero" need
+different answers. Pick a floor and change strategy under it.
+
+---
+
+## 25. Usage numbers could never be live (2026-08-18 rewrite)
+
+**Symptom:** the reason the original usage badges were disabled and then deleted. Percentages went
+stale, reset-time badges kept breaking as the wording changed (#9, #11), and the attempt to keep
+them fresh by re-opening the usage popover on a timer closed whatever else was open (#13).
+
+**Root cause:** the data source. 5-hour and weekly figures only exist in the DOM while the usage
+popover is open, so anything reading the DOM is reading a snapshot of the last time the user
+happened to open it. No amount of better selectors fixes that.
+
+**Fix:** stop reading the DOM. `usage.js` calls the same endpoint the app's own tray usage menu
+calls - `GET /api/organizations/<org>/usage`, documented in
+[architecture.md](architecture.md#plan-usage-endpoint-2026-08-18-discovery) - on a 60s timer, on
+window focus, and 5s/25s after any `/completion` request (the only moment usage actually changes).
+It also adopts any `/usage` response the app fetches for itself, via a `window.fetch` wrapper, so
+the numbers move the instant the app's own refresh lands. `resets_at` is an ISO timestamp, so the
+reset-time pattern matching that broke twice is gone from the live path entirely;
+`parseResetText()` survives only as a fallback for scraped text and now covers ISO, epoch,
+relative ("in 2h 15m", "resets 59m"), weekday+clock, month+day, numeric dates and bare clock times.
+
+**Still unsolved:** the context window figure has no endpoint. It stays DOM-sourced and shows
+`--` when nothing exposes it.
+
+**Lesson:** when a value is only in the DOM while a transient popover is open, the popover is not
+the data source, and no scraping strategy will make it one.

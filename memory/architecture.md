@@ -168,6 +168,42 @@ is created, survives React re-renders.
 
 ---
 
+## Plan usage endpoint (2026-08-18 discovery)
+
+The main-process bundle carries the tray usage feature. Search `[plan-usage]` in
+`.vite/build/index.chunk-*.js` to find it again after an upgrade. What it does:
+
+```
+GET <apiHost>/api/organizations/<orgUuid>/usage      # net.fetch, 300s timer, 15s timeout
+```
+
+Response (zod schema in the same region of the bundle):
+
+```jsonc
+{
+  "five_hour":            {"utilization": 6,  "resets_at": "<ISO>"},
+  "seven_day":            {"utilization": 83, "resets_at": "<ISO>"},   // all models
+  "seven_day_opus":       {...}, "seven_day_sonnet":     {...},
+  "seven_day_oauth_apps": {...}, // = Claude Code
+  "seven_day_cowork":     {...}, "seven_day_omelette":   {...},        // = Claude Design
+  "omelette_promotional": {...}, // grant; the app deliberately hides its reset time
+  "extra_usage": {"is_enabled": bool, "monthly_limit": n, "used_credits": n, "utilization": n}
+}
+```
+
+- `utilization` is **0-100**, not 0-1. Any bucket the account doesn't have comes back null.
+- `resets_at` is an **ISO timestamp**. Nothing has to parse "Resets Wed 1:39 AM" any more.
+- `orgUuid` comes from the `lastActiveOrg` cookie (that is where the main process reads it);
+  `GET /api/organizations` is the fallback.
+- The renderer shares the main process's Electron session, so a same-origin credentialed
+  `fetch()` from `custom-ui.js` sees exactly the same data. That is what `usage.js` does.
+
+**There is no endpoint for the context window.** That figure is computed client-side and only
+surfaces in the usage popover, so `usage.js` scrapes it opportunistically and shows `--`
+otherwise. Do not "fix" that by opening the popover on a timer - see issues-fixed #13.
+
+---
+
 ## CDP debugging (defunct since v1.9255.0)
 
 **Version 1.9255.0 added a security check:** if `--remote-debugging-port` is in argv without
