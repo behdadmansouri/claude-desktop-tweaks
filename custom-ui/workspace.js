@@ -10,14 +10,27 @@ const PANEL_CLS = 'cc-ws-panel';
 // below doesn't re-trigger on the same dialog element.
 const _seenDialogs = new WeakSet();
 
-// "⏱️ Time Management" → {emoji:"⏱️", text:"Time Management"}
+// "Time Management ⏱️" or "⏱️ Time Management" → {emoji:"⏱️", text:"Time Management"}
 // Emoji and text are kept separate so the panel can render the emoji in its
 // own span - it gets scaled up (see EMOJI_CSS) to be easier to pick out at a
 // glance, and emoji-only mode drops the text entirely.
+//
+// This used to only look for a LEADING emoji, which is backwards: the workspace
+// naming convention puts it at the END ("Claude Desktop 🤖", "Product Hunt 🛒"),
+// so every folder came back emoji-less and "emoji only" mode silently did
+// nothing at all. Both ends are checked now, suffix first since that is what
+// this workspace actually uses.
+//
+// The candidate run has to contain a real pictograph. Matching "any non-letter"
+// would read the trailing "." of a folder called "v1." - or the leading "." of
+// a dotfile - as an emoji and eat it.
+const PICTO_RE = /\p{Extended_Pictographic}/u;
 function splitEmoji(name) {
-  const m = name.match(/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su);
-  if (!m) return {emoji: '', text: name};
-  return {emoji: m[1].trim(), text: m[2].trimEnd()};
+  const post = name.match(/^(.*?[\p{L}\p{N}])[\s]*([^\p{L}\p{N}\s]+)$/su);
+  if (post && PICTO_RE.test(post[2])) return {emoji: post[2].trim(), text: post[1].trimEnd()};
+  const pre = name.match(/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su);
+  if (pre && PICTO_RE.test(pre[1])) return {emoji: pre[1].trim(), text: pre[2].trimEnd()};
+  return {emoji: '', text: name};
 }
 
 // "⏱️ Time Management" → "Time Management ⏱️" (TODO-preview header)
@@ -454,9 +467,12 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   const b = document.createElement('button');
   b.type = 'button';
   b.title = folder;
+  // Slightly taller than it needs to be on purpose: these are 11px rows in a
+  // dense grid, and an extra pixel of padding is the difference between hitting
+  // the project you meant and the one below it.
   b.style.cssText = 'display:flex;align-items:center;gap:5px;text-align:left;' +
-    'padding:2px 5px;border:0;border-radius:4px;background:transparent;color:inherit;' +
-    'font:inherit;font-size:11px;line-height:1.55;cursor:pointer;' +
+    'padding:3px 6px;border:0;border-radius:4px;background:transparent;color:inherit;' +
+    'font:inherit;font-size:11px;line-height:1.6;cursor:pointer;' +
     (compact ? 'justify-content:center;width:auto;' : 'width:100%;');
 
   if (emoji) {
@@ -492,8 +508,9 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // (e.g. a remote fetch), the hover just starts working. Today
   // __CC_TODOS__/CC_AI_TODOS are only populated for Local (cc-ai-data-v2 reads
   // the local filesystem - see update-ui.sh), so remote entries fall through
-  // to "No TODO.md".
-  if (ccTodo(folder)) b.addEventListener('mouseenter', () => showTodoPreview(folder));
+  // to "No TODO.md". Hooked up unconditionally so a folder without one clears
+  // the pane instead of leaving the previous project's list sitting there.
+  b.addEventListener('mouseenter', () => showTodoPreview(folder));
   return b;
 }
 
@@ -644,54 +661,70 @@ function renderMarkdownInto(el, text) {
   }
 }
 
-let _todoPreviewEl = null;
+
+// ─────────────────────────────────────────────────────────────
+//  PANEL SHELL + GEOMETRY
+//
+//  The panel used to be one absolutely-positioned box, anchored
+//  `bottom:calc(100% + 6px)` on the workspace row, whose height was whatever
+//  its contents happened to be. Both of the things that made it unusable came
+//  straight out of that:
+//
+//   - Jitter. The TODO preview sat UNDER the project rows inside a
+//     bottom-anchored box, so previewing a long TODO grew the box downward-
+//     resistant top edge, i.e. it pushed every project row upward. Moving the
+//     rows out from under the cursor swaps which project is hovered, which
+//     swaps the preview, which moves the rows again. Hovering a list and having
+//     it walk away is exactly that feedback loop.
+//   - Cropping at zoom. Height was clamped to the space above the row. Browser
+//     zoom shrinks the viewport in CSS pixels, so that space collapses and the
+//     panel became a scrolling sliver.
+//
+//  Both are geometry problems, not content problems, so the fix is geometry:
+//  the panel is now a FIXED-size box (width and height computed from the
+//  viewport, never from its contents) with two independently-scrolling panes.
+//  Hovering a project repaints the preview pane and changes nothing else on
+//  screen. When there genuinely isn't room above the row, it stops trying to
+//  fit there and anchors to the viewport instead.
+// ─────────────────────────────────────────────────────────────
+const WS_MARGIN   = 12;   // keep-out from every viewport edge
+const WS_GAP      = 6;    // gap between the panel and the workspace row
+const WS_TARGET_W = 760;
+const WS_TARGET_H = 330;
+const WS_MIN_H    = 210;  // below this, anchoring above the row isn't worth it
+const WS_PREV_W   = 290;  // TODO preview pane
+const WS_STACK_W  = 470;  // narrower than this, stack the panes instead
+
+const COLLAPSE_KEY = 'cc-ws-collapsed';
+const wsCollapsed = () => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } };
+const setWsCollapsed = v => { try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
+
+let _prevTitle = null, _prevBody = null;
+
 function showTodoPreview(folder) {
-  if (!_todoPreviewEl) return;
+  if (!_prevTitle || !_prevBody) return;
   const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
   const text = ccTodo(folder);
-  // firstChild is the header row; its first child is the title span (the
-  // emoji-only toggle is its sibling and must survive the write).
-  _todoPreviewEl.firstChild.firstChild.textContent = name + ' - TODO.md';
-  if (text) renderMarkdownInto(_todoPreviewEl.lastChild, text);
-  else _todoPreviewEl.lastChild.textContent = 'No TODO.md in this folder.';
+  _prevTitle.textContent = name + ' - TODO.md';
+  // The pane keeps its scroll offset between projects; without this a long
+  // previous TODO leaves the next one already scrolled past its own heading.
+  _prevBody.scrollTop = 0;
+  if (text) renderMarkdownInto(_prevBody, text);
+  else _prevBody.textContent = 'No TODO.md in this folder.';
 }
 
-function rebuildPanel() {
-  const panel = document.querySelector('.' + PANEL_CLS);
-  if (!panel?._wsRow) return;
-  const ws = loadWS();
-  const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
-    : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
-    : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
-  // Every non-Local connection we've ever recorded, grouped by host name -
-  // no longer hardcoded to "Myserver".
-  const remote = {};
-  for (const {conn, folder} of ws) {
-    if (!conn || conn === 'Local') continue;
-    (remote[conn] ||= []);
-    if (!remote[conn].includes(folder)) remote[conn].push(folder);
-  }
-
-  panel.innerHTML = '';
-  const cols = document.createElement('div');
-  cols.style.cssText = 'display:flex;gap:4px;';
-  cols.appendChild(buildColumn('Local', L, panel._wsRow));
-  cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
-  panel.appendChild(cols);
-
-  const preview = document.createElement('div');
-  preview.style.cssText = 'margin-top:8px;padding-top:6px;' +
-    'border-top:1px solid var(--claude-border,rgba(128,128,128,.22));';
-
-  const phdr = document.createElement('div');
-  phdr.style.cssText = 'display:flex;align-items:center;gap:8px;' +
+// Builds the static chrome once. rebuildPanel() only ever refills `list`, so
+// the box itself never gets torn down and rebuilt under the cursor.
+function buildShell(panel) {
+  const head = document.createElement('div');
+  head.style.cssText = 'flex:none;display:flex;align-items:center;gap:8px;' +
     'font-size:10px;font-weight:600;opacity:.55;text-transform:uppercase;' +
-    'letter-spacing:.05em;margin-bottom:5px;';
-  // phdr's first child carries the title text (showTodoPreview writes to it);
-  // the emoji-only toggle sits beside it.
-  const ptitle = document.createElement('span');
-  ptitle.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  phdr.appendChild(ptitle);
+    'letter-spacing:.05em;margin-bottom:6px;';
+
+  const htitle = document.createElement('span');
+  htitle.textContent = 'Projects';
+  htitle.style.cssText = 'flex:1;min-width:0;';
+  head.appendChild(htitle);
 
   const toggle = document.createElement('label');
   toggle.style.cssText = 'display:flex;align-items:center;gap:4px;flex:none;cursor:pointer;' +
@@ -705,91 +738,140 @@ function rebuildPanel() {
   toggle.appendChild(cb);
   toggle.appendChild(document.createTextNode('emoji only'));
   toggle.onclick = e => e.stopPropagation();
-  phdr.appendChild(toggle);
+  head.appendChild(toggle);
 
+  // Collapse exists for the zoomed-in case: at 150%+ the panel legitimately
+  // covers most of the window, and you want it out of the way between uses.
+  const coll = document.createElement('button');
+  coll.type = 'button';
+  coll.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;' +
+    'cursor:pointer;font:inherit;font-size:11px;line-height:1;padding:2px 4px;opacity:.8;';
+  coll.onclick = e => {
+    e.stopPropagation();
+    setWsCollapsed(!wsCollapsed());
+    applyCollapsed(panel);
+    clampPanel(panel);
+  };
+  head.appendChild(coll);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'flex:1;display:flex;gap:8px;min-height:0;min-width:0;';
+
+  const list = document.createElement('div');
+  list.style.cssText = 'flex:1 1 auto;min-width:0;overflow:auto;';
+
+  const prev = document.createElement('div');
+  prev.style.cssText = 'flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;';
+
+  const ptitle = document.createElement('div');
+  ptitle.style.cssText = 'flex:none;font-size:10px;font-weight:600;opacity:.55;' +
+    'text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;' +
+    'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   const pbody = document.createElement('div');
-  // Fixed 240px used to push the panel off-screen at high browser zoom (the
-  // panel is anchored above the workspace row, so it grows upward). Cap it
-  // against the viewport instead.
-  pbody.style.cssText = 'margin:0;font-size:11px;line-height:1.4;' +
-    'word-break:break-word;max-height:min(240px,28vh);overflow:auto;opacity:.85;font-family:inherit;';
-  preview.appendChild(phdr);
-  preview.appendChild(pbody);
-  panel.appendChild(preview);
-  _todoPreviewEl = preview;
+  pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
+    'word-break:break-word;opacity:.85;font-family:inherit;';
+
+  prev.appendChild(ptitle);
+  prev.appendChild(pbody);
+  body.appendChild(list);
+  body.appendChild(prev);
+  panel.appendChild(head);
+  panel.appendChild(body);
+
+  panel._els = {head, htitle, coll, body, list, prev, ptitle, pbody};
+  _prevTitle = ptitle;
+  _prevBody = pbody;
+  applyCollapsed(panel);
+}
+
+function applyCollapsed(panel) {
+  const c = wsCollapsed();
+  panel._els.body.style.display = c ? 'none' : 'flex';
+  panel._els.head.style.marginBottom = c ? '0' : '6px';
+  panel._els.coll.textContent = c ? '▸' : '▾';
+  panel._els.coll.title = c ? 'Expand project panel' : 'Collapse project panel';
+}
+
+function rebuildPanel() {
+  const panel = document.querySelector('.' + PANEL_CLS);
+  if (!panel?._wsRow || !panel._els) return;
+  const ws = loadWS();
+  const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
+    : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
+    : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
+  // Every non-Local connection we've ever recorded, grouped by host name -
+  // no longer hardcoded to "Myserver".
+  const remote = {};
+  for (const {conn, folder} of ws) {
+    if (!conn || conn === 'Local') continue;
+    (remote[conn] ||= []);
+    if (!remote[conn].includes(folder)) remote[conn].push(folder);
+  }
+
+  const list = panel._els.list;
+  list.textContent = '';
+  const cols = document.createElement('div');
+  cols.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
+  cols.appendChild(buildColumn('Local', L, panel._wsRow));
+  cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
+  list.appendChild(cols);
 
   const seed = L.find(f => ccTodo(f));
   if (seed) showTodoPreview(seed);
-  else { ptitle.textContent = 'TODO.md'; pbody.textContent = 'Hover a project to preview its TODO.md'; }
+  else {
+    _prevTitle.textContent = 'TODO.md';
+    _prevBody.textContent = 'Hover a project to preview its TODO.md';
+  }
 
   clampPanel(panel);
 }
 
 function removeAllPanels() {
-  document.querySelectorAll('.' + PANEL_CLS).forEach(p => { p._ro?.disconnect(); p.remove(); });
+  document.querySelectorAll('.' + PANEL_CLS).forEach(p => p.remove());
+  _prevTitle = _prevBody = null;
 }
 
-// Records the workspace the row is actually SHOWING, not whatever it shows
-// mid-switch. Switching connection then folder is two async steps: sampling
-// once at a fixed delay could catch the new host paired with the previous
-// (Local) folder, and that bogus pair then sat in the remote column forever,
-// sending clickWorkspace hunting for a local folder on an SSH host. So: take
-// two samples ~700ms apart and only record if they agree with no menu open.
-function readWSLabels(wsRow) {
-  const btns = [...wsRow.querySelectorAll('button[aria-haspopup="menu"]')];
-  if (btns.length < 2) return null;
-  const conn   = cleanLabel(btns[0].querySelector('span')?.textContent);
-  const folder = cleanLabel(btns[1].querySelector('span')?.textContent);
-  return (conn && folder) ? {conn, folder} : null;
-}
-
-function sampleWS(wsRow) {
-  setTimeout(() => {
-    if (!wsRow.isConnected) return;
-    const a = readWSLabels(wsRow);
-    if (!a) return;
-    setTimeout(() => {
-      if (!wsRow.isConnected || document.querySelector(_MENU_SEL)) return;
-      const b = readWSLabels(wsRow);
-      if (b && b.conn === a.conn && b.folder === a.folder) recordWS(b.conn, b.folder);
-    }, 700);
-  }, 400);
+// The panel now lives on document.body (see installPanel), so nothing removes
+// it automatically when its row goes away. Called from the scan loop.
+function prunePanels() {
+  document.querySelectorAll('.' + PANEL_CLS).forEach(p => {
+    if (!p._wsRow || !p._wsRow.isConnected) { p.remove(); _prevTitle = _prevBody = null; }
+    else clampPanel(p);
+  });
 }
 
 function installPanel(wsRow) {
   if (wsRow.dataset.ccRow) return;
   wsRow.dataset.ccRow = '1';
-  wsRow.style.position = 'relative';
   wsRow.addEventListener('click', () => sampleWS(wsRow), true);
   if (location.pathname.includes('/chat/')) return;
+  if (document.querySelector('.' + PANEL_CLS)) return;
+
   const panel = document.createElement('div');
   panel.className = PANEL_CLS;
   panel._wsRow = wsRow;
+  // position:fixed, and parented to <body> rather than to the row. An
+  // absolutely-positioned child inherits its containing block from the nearest
+  // positioned/transformed ancestor, and claude.ai wraps this row in animated
+  // containers - one `transform` anywhere up the tree silently redefines what
+  // "fixed" means. Off the row, off the problem.
+  //
   // Sepia rather than near-white: monochrome emoji (☑ ⏱ ✂ …) disappear against
   // #faf9f5 but read clearly against a warm ground.
-  panel.style.cssText = 'position:absolute;bottom:calc(100% + 6px);left:0;z-index:200;' +
+  panel.style.cssText = 'position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
     'background:#f2e8d5;' +
     'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
     'border-radius:8px;padding:10px 12px;' +
-    'width:min(760px,calc(100vw - 24px));max-width:calc(100vw - 24px);' +
-    'overflow:auto;' +  // max-height is set per-frame by clampPanel
-    'box-shadow:0 4px 20px rgba(0,0,0,.16);font-family:inherit;';
-  wsRow.appendChild(panel);
+    'box-shadow:0 4px 20px rgba(0,0,0,.16);font-family:inherit;color:inherit;' +
+    'overflow:hidden;';  // panes scroll, the box never does
+  document.body.appendChild(panel);
+  buildShell(panel);
   rebuildPanel();
-  // The panel's own size changes without the viewport changing (TODO preview
-  // swap, emoji-only toggle), and those need a re-clamp too.
-  if (typeof ResizeObserver === 'function') {
-    panel._ro = new ResizeObserver(scheduleClamp);
-    panel._ro.observe(panel);
-  }
   installClampListeners();
-  clampPanel(panel);
 }
 
-// Zoom and window resize both move the row and change the viewport, and
-// neither used to re-run clampPanel - the panel kept a stale `left` offset
-// and a max-height that ignored where the row actually sits, so it wandered
-// off-screen. Registered once, coalesced to one clamp per frame.
+// Zoom and window resize both move the row and change the viewport. Coalesced
+// to one clamp per frame across every panel.
 let _clampListeners = false;
 let _clampRaf = 0;
 function scheduleClamp() {
@@ -807,28 +889,70 @@ function installClampListeners() {
   window.visualViewport?.addEventListener('scroll', scheduleClamp);
 }
 
-// The panel is anchored to the workspace row (left:0), so on an indented row -
-// or at high browser zoom, where CSS pixels grow and the viewport shrinks - a
-// full-width panel runs off the right edge. Nudge it back by hand; CSS alone
-// can't express "clamp to viewport" for an absolutely-positioned box whose
-// containing block is off-centre.
+// Sets width/height/top/left outright every time. Nothing here reads the
+// panel's content size, so hovering a project can never move the box.
 function clampPanel(panel) {
-  if (!panel?.isConnected) return;
-  const margin = 12;
+  if (!panel?.isConnected || !panel._els) return;
+  const row = panel._wsRow;
+  if (!row?.isConnected) { panel.remove(); _prevTitle = _prevBody = null; return; }
 
-  // Vertical: the panel grows UPWARD from the row, so the space it has is the
-  // gap between the top of the window and the top of the row - not the whole
-  // viewport height. A fixed calc(100vh - 90px) ignored where the row sits and
-  // let a tall list (or a zoomed-in viewport) push the panel off the top.
-  const rowTop = panel._wsRow?.getBoundingClientRect().top ?? window.innerHeight;
-  const GAP = 6; // matches bottom:calc(100% + 6px)
-  const maxH = Math.max(140, Math.round(rowTop - GAP - margin)) + 'px';
-  if (panel.style.maxHeight !== maxH) panel.style.maxHeight = maxH;
+  const rr = row.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.max(240, Math.min(WS_TARGET_W, vw - 2 * WS_MARGIN));
 
-  panel.style.left = '0px';
-  const r = panel.getBoundingClientRect();
-  let shift = 0;
-  if (r.right > window.innerWidth - margin) shift = window.innerWidth - margin - r.right;
-  if (r.left + shift < margin) shift = margin - r.left;
-  if (shift) panel.style.left = shift + 'px';
+  let left = Math.round(rr.left);
+  if (left + w > vw - WS_MARGIN) left = vw - WS_MARGIN - w;
+  if (left < WS_MARGIN) left = WS_MARGIN;
+
+  panel.style.width = w + 'px';
+  panel.style.left = left + 'px';
+
+  if (wsCollapsed()) {
+    // Height follows the single head row; measure after clearing the override.
+    panel.style.height = 'auto';
+    const h = panel.offsetHeight || 30;
+    let top = Math.round(rr.top) - WS_GAP - h;
+    if (top < WS_MARGIN) top = Math.max(WS_MARGIN, Math.min(vh - WS_MARGIN - h, Math.round(rr.bottom) + WS_GAP));
+    panel.style.top = top + 'px';
+    return;
+  }
+
+  const above = Math.round(rr.top) - WS_GAP - WS_MARGIN;
+  let h, top;
+  if (above >= WS_MIN_H) {
+    h = Math.min(WS_TARGET_H, above);
+    top = Math.round(rr.top) - WS_GAP - h;
+  } else {
+    // Not enough headroom - browser zoom, or a short window. Squeezing into a
+    // 60px sliver is what made it useless; anchor to the viewport and accept
+    // overlapping the row. The collapse chevron is the way out.
+    h = Math.min(WS_TARGET_H, vh - 2 * WS_MARGIN);
+    top = WS_MARGIN;
+  }
+  panel.style.height = h + 'px';
+  panel.style.top = top + 'px';
+
+  // Side-by-side needs real width for both panes; below that, stack them so
+  // the preview stays reachable instead of being dropped. Either way both
+  // dimensions are fixed, so the layout is stable under hover.
+  const {body, list, prev} = panel._els;
+  if (w >= WS_STACK_W) {
+    body.style.flexDirection = 'row';
+    prev.style.width = WS_PREV_W + 'px';
+    prev.style.height = '';
+    prev.style.borderLeft = '1px solid var(--claude-border,rgba(128,128,128,.22))';
+    prev.style.borderTop = '';
+    prev.style.paddingLeft = '8px';
+    prev.style.paddingTop = '';
+    list.style.maxHeight = '';
+  } else {
+    body.style.flexDirection = 'column';
+    prev.style.width = 'auto';
+    prev.style.height = Math.round(h * 0.42) + 'px';
+    prev.style.borderLeft = '';
+    prev.style.borderTop = '1px solid var(--claude-border,rgba(128,128,128,.22))';
+    prev.style.paddingLeft = '';
+    prev.style.paddingTop = '6px';
+    list.style.maxHeight = '';
+  }
 }
