@@ -85,14 +85,17 @@ function cuPct(v) {
   return Math.max(0, Math.min(100, Math.round(v)));
 }
 
-// Neutral until it actually matters. Colouring 30% orange just trains you to
-// ignore the colour.
-function cuColor(pct) {
+// Each bucket keeps its own hue so the chip can drop its text labels and still
+// be readable at a glance, and severity overrides the hue once a number is
+// actually worth reacting to. Colouring 30% orange just trains you to ignore
+// the colour, so nothing warns below 60.
+const CU_HUE = {ctx: '#3b82f6', five_hour: '#d97706', seven_day: '#16a34a'};
+function cuColor(pct, key) {
   if (pct == null) return 'var(--cc-u-dim)';
   if (pct >= 95) return '#ef4444';
   if (pct >= 80) return '#f97316';
   if (pct >= 60) return '#eab308';
-  return 'var(--cc-u-fg)';
+  return (key && CU_HUE[key]) || 'var(--cc-u-fg)';
 }
 
 // ── reset-time parsing (fallback only) ──────────────────────────────────────
@@ -476,20 +479,32 @@ function cuInjectCSS() {
     '@media (prefers-color-scheme:dark){:root{--cc-u-bg:#2e2919;--cc-u-fg:#ece5d5;--cc-u-dim:rgba(236,229,213,.42);--cc-u-line:rgba(255,255,255,.14);}}',
     // The wrapper spans the corner but must never eat clicks meant for the app;
     // only the chip itself is interactive.
+    //
+    // -webkit-app-region:no-drag is the whole reason the top corners work at
+    // all. Electron marks the window's top strip as a drag region, and a drag
+    // region swallows pointer events before they reach anything painted inside
+    // it - which is why the chip went dead the moment it moved up there, and
+    // why the app's own top-bar icons are awkward to hit. Opting this element
+    // out puts clicks back.
     '#cc-usage{position:fixed;z-index:2147483000;pointer-events:none;font-family:inherit;' +
-      'font-variant-numeric:tabular-nums;letter-spacing:-.01em;}',
-    '#cc-usage[data-corner="br"]{right:10px;bottom:10px;}',
-    '#cc-usage[data-corner="bl"]{left:10px;bottom:10px;}',
-    '#cc-usage[data-corner="tr"]{right:10px;top:10px;}',
-    '#cc-usage[data-corner="tl"]{left:10px;top:10px;}',
-    '.cc-u-chip{pointer-events:auto;display:inline-flex;align-items:center;gap:9px;' +
+      'font-variant-numeric:tabular-nums;letter-spacing:-.01em;-webkit-app-region:no-drag;}',
+    '#cc-usage[data-corner="br"]{right:12px;bottom:12px;}',
+    '#cc-usage[data-corner="bl"]{left:12px;bottom:12px;}',
+    // Top corners clear the app's own 44px top bar rather than sitting under it.
+    '#cc-usage[data-corner="tr"]{right:12px;top:46px;}',
+    '#cc-usage[data-corner="tl"]{left:12px;top:46px;}',
+    '.cc-u-chip{pointer-events:auto;-webkit-app-region:no-drag;' +
+      'display:inline-flex;align-items:center;gap:7px;' +
       'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
       'border-radius:7px;padding:3px 8px;font-size:10.5px;line-height:1.5;cursor:pointer;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:.55;transition:opacity .12s;user-select:none;}',
+      'box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:.6;transition:opacity .12s;user-select:none;}',
     '#cc-usage:hover .cc-u-chip{opacity:1;}',
-    '.cc-u-chip .k{opacity:.55;font-weight:600;}',
+    // Attached mode: inline inside the app's own composer footer, no card of
+    // its own, inheriting the row's sizing.
+    '.cc-u-chip.attached{background:transparent;border:0;box-shadow:none;opacity:.9;padding:0 4px;}',
     '.cc-u-chip .v{font-weight:700;}',
-    '.cc-u-chip .r{opacity:.5;}',
+    '.cc-u-chip .r{opacity:.45;font-size:9.5px;}',
+    '.cc-u-chip .sep{opacity:.25;}',
     '.cc-u-card{pointer-events:none;display:none;position:absolute;min-width:230px;' +
       'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
       'border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.5;' +
@@ -509,7 +524,61 @@ function cuInjectCSS() {
   document.head.appendChild(s);
 }
 
-let cuRoot = null, cuChipEl = null, cuCardEl = null;
+let cuRoot = null, cuChipEl = null, cuCardEl = null, cuNative = null;
+
+// The app's own usage control - the little circular tracker next to the model
+// name in the composer footer. Found by aria-label, never by class name or
+// position, and guarded to icon-button dimensions so a redesign that reuses the
+// word "usage" on a big container can't get its icon hidden (issues-fixed #18).
+function cuFindNative() {
+  if (cuNative && cuNative.isConnected) return cuNative;
+  cuNative = null;
+  const cands = document.querySelectorAll(
+    'button[aria-label*="usage" i],button[aria-label*="Usage" i],' +
+    'button[aria-label*="limit" i],button[aria-label*="plan" i]');
+  for (const b of cands) {
+    const r = b.getBoundingClientRect();
+    if (r.width === 0 || r.width > 90 || r.height > 60) continue;
+    cuNative = b;
+    break;
+  }
+  return cuNative;
+}
+
+function cuCycleCorner() {
+  const next = CU_CORNERS[(CU_CORNERS.indexOf(cuRoot.dataset.corner) + 1) % CU_CORNERS.length];
+  cuRoot.dataset.corner = next;
+  try { localStorage.setItem(CU_POS_KEY, next); } catch (_) {}
+}
+
+// Sit inside the composer footer next to the app's own control when we can find
+// it, and fall back to a floating corner chip when we can't. Re-checked on the
+// tick because React remounts that footer.
+function cuPlace() {
+  const native = cuFindNative();
+  if (native && native.parentElement) {
+    if (cuRoot.parentElement !== native.parentElement || cuRoot.nextSibling !== native) {
+      native.parentElement.insertBefore(cuRoot, native);
+    }
+    cuRoot.style.position = 'static';
+    cuRoot.style.pointerEvents = 'auto';
+    cuChipEl.classList.add('attached');
+    // Collapse only the icon, never the button: the button stays in the DOM and
+    // stays clickable, which is what keeps the native popover reachable.
+    for (const svg of native.querySelectorAll(':scope > svg, :scope > span > svg')) {
+      svg.style.display = 'none';
+    }
+    native.style.width = '0px';
+    native.style.padding = '0px';
+    native.style.overflow = 'hidden';
+    return true;
+  }
+  if (cuRoot.parentElement !== document.body) document.body.appendChild(cuRoot);
+  cuRoot.style.position = '';
+  cuRoot.style.pointerEvents = '';
+  cuChipEl.classList.remove('attached');
+  return false;
+}
 
 function cuInstall() {
   if (cuRoot && cuRoot.isConnected) return;
@@ -519,17 +588,30 @@ function cuInstall() {
   cuRoot.dataset.corner = cuCorner();
   cuChipEl = document.createElement('div');
   cuChipEl.className = 'cc-u-chip';
-  cuChipEl.title = 'Claude usage - click to move to the next corner';
-  cuChipEl.onclick = () => {
-    const next = CU_CORNERS[(CU_CORNERS.indexOf(cuRoot.dataset.corner) + 1) % CU_CORNERS.length];
-    cuRoot.dataset.corner = next;
-    try { localStorage.setItem(CU_POS_KEY, next); } catch (_) {}
+  cuChipEl.title = 'Claude usage - click for the full breakdown, right-click to move it';
+  // Clicking opens the app's own usage popover rather than doing something
+  // custom. That also happens to be the only thing that puts the context-window
+  // figure into the DOM, so it doubles as a manual refresh for `ctx`.
+  cuChipEl.onclick = e => {
+    e.stopPropagation();
+    const native = cuFindNative();
+    if (native) {
+      native.style.width = '';
+      native.style.padding = '';
+      fireClick(native);
+      setTimeout(() => { try { cuScanContext(); cuRender(); } catch (_) {} }, 260);
+      setTimeout(() => { try { cuScanContext(); cuRender(); cuPlace(); } catch (_) {} }, 900);
+    } else {
+      cuCycleCorner();
+    }
   };
+  cuChipEl.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); cuCycleCorner(); };
   cuCardEl = document.createElement('div');
   cuCardEl.className = 'cc-u-card';
   cuRoot.appendChild(cuChipEl);
   cuRoot.appendChild(cuCardEl);
   document.body.appendChild(cuRoot);
+  cuPlace();
 }
 
 function cuBucket(key) {
@@ -542,17 +624,17 @@ function cuBucket(key) {
   return {pct: cuPct(b.utilization), resetMs: Number.isFinite(t) ? t : null};
 }
 
-function cuItem(short, pct, resetMs) {
-  const k = document.createElement('span');
-  k.className = 'k';
-  k.textContent = short;
+// No text label: the hue identifies the bucket (blue context, amber 5-hour,
+// green weekly) and the hover card spells all of it out anyway. The labels were
+// most of the chip's width and none of its information.
+function cuItem(key, label, pct, resetMs) {
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'display:inline-flex;gap:3px;align-items:baseline;';
+  wrap.title = label + (pct == null ? ': unknown' : ': ' + pct + '%');
   const v = document.createElement('span');
   v.className = 'v';
   v.textContent = pct == null ? '--' : pct + '%';
-  v.style.color = cuColor(pct);
-  const wrap = document.createElement('span');
-  wrap.style.cssText = 'display:inline-flex;gap:3px;align-items:baseline;';
-  wrap.appendChild(k);
+  v.style.color = cuColor(pct, key);
   wrap.appendChild(v);
   const left = resetMs == null ? null : cuFmtIn(resetMs - Date.now());
   if (left) {
@@ -568,11 +650,18 @@ function cuRender() {
   if (!cuRoot || !cuRoot.isConnected) return;
 
   cuChipEl.textContent = '';
-  for (const key of CU_CHIP) {
-    const short = key === 'ctx' ? 'ctx' : (CU_BUCKETS.find(b => b[0] === key) || [, , key])[2];
+  CU_CHIP.forEach((key, i) => {
+    const label = key === 'ctx' ? 'Context window'
+      : (CU_BUCKETS.find(b => b[0] === key) || [, key])[1];
     const b = cuBucket(key);
-    cuChipEl.appendChild(cuItem(short, b ? b.pct : null, b ? b.resetMs : null));
-  }
+    if (i) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = '·';
+      cuChipEl.appendChild(sep);
+    }
+    cuChipEl.appendChild(cuItem(key, label, b ? b.pct : null, b ? b.resetMs : null));
+  });
 
   cuCardEl.textContent = '';
   const addRow = (label, pct, resetMs, extra) => {
@@ -657,6 +746,7 @@ function installUsage() {
   setInterval(() => {
     if (document.hidden) return;
     if (!cuRoot || !cuRoot.isConnected) cuInstall();
+    try { cuPlace(); } catch (_) {}
     try { cuScanContext(); } catch (_) {}
     cuRender();
   }, CU_TICK_MS);
@@ -671,9 +761,53 @@ function installUsage() {
     return {
       org: cuOrg, plan: cuPlan, planAgeMs: cuPlanAt ? Date.now() - cuPlanAt : null,
       ctx: cuCtx, failures: cuFailures, corner: cuRoot && cuRoot.dataset.corner,
+      attachedTo: cuNative ? (cuNative.getAttribute('aria-label') || cuNative.tagName) : null,
       refresh: () => cuPoll(),
       probe: on => { try { localStorage.setItem(CU_PROBE_KEY, on ? '1' : '0'); } catch (_) {} },
       parseResetText,
     };
   };
+}
+
+// ── "approaching your weekly limit" nag ─────────────────────────────────────
+//
+// Dismissed rather than hidden where possible: clicking the app's own close
+// control makes the app remember, so it stays gone instead of being re-rendered
+// and re-hidden forever. Hiding is the fallback.
+//
+// Every guard here exists because of issues-fixed #18, where a hider matched a
+// container that had grown to wrap the whole app and blanked the page: this
+// only ever touches a box that is small, is not the app root, and does not
+// contain the composer.
+const CU_NAG_KEY = 'cc-hide-limit-nag';
+const CU_NAG_RE = /approaching\s+(?:your\s+)?(?:weekly|usage|5-hour)\s+limit|you(?:'|’)?re\s+approaching|approaching\s+the\s+limit/i;
+const _cuSeenNags = new WeakSet();
+
+function dismissLimitNags() {
+  try { if (localStorage.getItem(CU_NAG_KEY) === '0') return; } catch (_) {}
+  const scope = document.querySelectorAll(
+    '[role="dialog"],[role="alertdialog"],[role="alert"],[role="status"],' +
+    '[data-state="open"],[data-radix-popper-content-wrapper]');
+  for (const el of scope) {
+    if (_cuSeenNags.has(el)) continue;
+    const r = el.getBoundingClientRect();
+    // Toast-or-banner sized only. A full-screen overlay is not this.
+    if (r.height === 0 || r.height > 320 || r.width > 760) continue;
+    if (el === document.body || el === document.documentElement) continue;
+    if (el.querySelector('textarea,[contenteditable="true"],form')) continue;
+    const text = el.innerText || '';
+    if (!CU_NAG_RE.test(text)) continue;
+    _cuSeenNags.add(el);
+    const close = [...el.querySelectorAll('button')].find(b => {
+      const lbl = (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '');
+      return /close|dismiss|got it|okay|ok\b|not now/i.test(lbl);
+    });
+    if (close) {
+      console.log('[cc-usage] dismissing limit nag via its own close button');
+      fireClick(close);
+    } else {
+      console.log('[cc-usage] hiding limit nag (no close button found)');
+      el.style.display = 'none';
+    }
+  }
 }

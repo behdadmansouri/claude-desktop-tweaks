@@ -31,6 +31,8 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/usage.js"
   printf '\n'
+  cat "$MODULES_DIR/diag.js"
+  printf '\n'
   cat "$MODULES_DIR/titlewatch.js"
   printf '\n'
   cat "$MODULES_DIR/bootstrap.js"
@@ -133,7 +135,8 @@ idx = mv.find("// ── custom-ui loader")
 expose = (
     "try{_cb.exposeInMainWorld('ccBridge',{"
     "armFolder:function(p){return _ipc.invoke('cc-arm-folder',p);},"
-    "openFolder:function(p){return _ipc.invoke('cc-open-folder',p);}"
+    "openFolder:function(p){return _ipc.invoke('cc-open-folder',p);},"
+    "writeTodo:function(p,t){return _ipc.invoke('cc-write-todo',p,t);}"
     "});}catch(_){}"
 )
 
@@ -272,6 +275,34 @@ if "if(__cc)return __cc;" not in ix:
         print("  WARNING: browseFolder handler signature not found - folder one-click open disabled")
 else:
     print("  browseFolder handler already honors armed folder")
+
+# ── Write a folder's TODO.md back to disk, so the panel's preview pane can be
+#    an editor rather than a viewer. Deliberately narrow: the path must resolve
+#    inside ~/Documents/AI Projects and the file written is always TODO.md, so a
+#    compromised renderer can't turn this into an arbitrary-file-write primitive.
+#    Writes via a temp file + rename so a crash mid-write can't truncate a real
+#    TODO.md. Idempotent, guarded by the channel name.
+if "cc-write-todo" not in ix:
+    writer = (
+        ";(function(){try{var _e=require('electron'),fs=require('fs'),"
+        "p=require('path'),os=require('os');"
+        "var ROOT=p.resolve(p.join(os.homedir(),'Documents','AI Projects'));"
+        "_e.ipcMain.handle('cc-write-todo',function(ev,dir,text){try{"
+        "if(typeof dir!=='string'||typeof text!=='string')return{ok:false,error:'bad args'};"
+        "if(text.length>200000)return{ok:false,error:'too large'};"
+        "var full=p.resolve(dir);"
+        "if(full!==ROOT&&full.indexOf(ROOT+p.sep)!==0)return{ok:false,error:'outside AI Projects'};"
+        "if(!fs.statSync(full).isDirectory())return{ok:false,error:'not a directory'};"
+        "var dest=p.join(full,'TODO.md'),tmp=dest+'.cc-tmp';"
+        "fs.writeFileSync(tmp,text,'utf8');fs.renameSync(tmp,dest);"
+        "return{ok:true};}catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+        "}catch(_){}})();\n"
+    )
+    ix = ix + writer
+    ix_changed = True
+    print("  Appended cc-write-todo ipcMain handler to main bundle")
+else:
+    print("  cc-write-todo ipcMain handler already present in main bundle")
 
 if "cc-open-folder" not in ix:
     opener = (

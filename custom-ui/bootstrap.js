@@ -17,6 +17,9 @@ function scan() {
   // The panel lives on <body> now, so nothing tears it down when its row goes;
   // this also re-clamps it against a row that has moved (sidebar toggle).
   prunePanels();
+  // 2s is the right cadence for a toast: fast enough that it barely registers,
+  // slow enough not to be a hot loop.
+  try { dismissLimitNags(); } catch (_) {}
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;
@@ -41,6 +44,7 @@ function bootstrap() {
   // one IIFE scope, so an exception here would otherwise take the project panel
   // down with it.
   try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
+  try { dgBootstrap(); } catch (e) { console.error('[cc-dump] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});
   setInterval(scan, 2000);

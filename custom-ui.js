@@ -86,8 +86,17 @@ function emojiSuffix(name) {
 // Oversized emoji that does NOT grow the line box: `line-height:0` makes an
 // inline element contribute nothing to the line height, so rows stay the same
 // height as text-only rows no matter how large font-size gets.
+//
+// That trick is right for a NAMED row, where the text sets the row height, and
+// catastrophically wrong for an emoji-only tile, where the emoji is the only
+// child: the button's content box collapsed to zero, leaving a 6px-tall hit
+// target under a 21px glyph. The glyphs painted over each other and nothing was
+// clickable. Emoji-only tiles use TILE_CSS instead, which gives them a real box.
 const EMOJI_CSS = 'font-size:1.5em;line-height:0;display:inline-block;' +
   'vertical-align:-0.08em;flex:none;';
+const TILE_PX = 30;
+const TILE_CSS = 'font-size:19px;line-height:1;display:flex;align-items:center;' +
+  'justify-content:center;width:100%;height:100%;flex:none;';
 
 // Emoji-only mode - show just the emoji for each project, no names.
 const EMOJI_ONLY_KEY = 'cc-ws-emoji-only';
@@ -101,7 +110,29 @@ function ccTodo(folder) {
   return CC_TODOS[folder];
 }
 
-const loadWS = () => { try { return JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; } };
+// Sanitizing on WRITE (added in #21) never helped the entries already sitting
+// in localStorage from before that fix, which is why the bottom of the SSH
+// column kept showing unreadable tofu tiles. Clean on READ as well, and drop
+// anything that has no readable characters left afterwards - a tile whose label
+// is three zero-width spaces is unclickable and un-right-clickable, so it can
+// never be removed through the UI either.
+const hasReadable = s => /[\p{L}\p{N}]/u.test(s || '');
+function loadWS() {
+  let raw;
+  try { raw = JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; }
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  let dropped = false;
+  for (const w of raw) {
+    if (!w || typeof w !== 'object') { dropped = true; continue; }
+    const conn = cleanLabel(w.conn), folder = cleanLabel(w.folder);
+    if (!hasReadable(conn) || !hasReadable(folder)) { dropped = true; continue; }
+    out.push({conn, folder, ts: w.ts || 0});
+  }
+  // Rewrite once so the garbage doesn't have to be re-filtered on every render.
+  if (dropped) { try { localStorage.setItem(WS_KEY, JSON.stringify(out)); } catch {} }
+  return out;
+}
 const saveWS = list => localStorage.setItem(WS_KEY, JSON.stringify(list.slice(0, 40)));
 
 // Labels are scraped from button textContent, which can pick up characters
@@ -200,11 +231,44 @@ async function waitNewMenu(ms = 2500) {
   return items;
 }
 
-function matchFolder(itemText, folder) {
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+// 3 = exact, 2 = one is a prefix of the other, 1 = loose substring, 0 = no.
+//
+// The old version returned a bare boolean with `it.includes(f) || f.includes(it)`
+// and callers took the FIRST menu item that passed. "AI Projects" is a substring
+// of "AI Projects Manager", "Behi Blueprint" of nothing but "Fashion" of
+// "Fashion Archive", and so on - so picking a project could quietly open a
+// different one whose name merely contained it. Scoring plus best-of lets an
+// exact match beat an accidental substring no matter what order the menu is in.
+function matchScore(itemText, folder) {
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const name = folder.split('/').filter(Boolean).pop() || folder;
   const it = norm(itemText), f = norm(name);
-  return it === f || it.includes(f) || f.includes(it);
+  if (!it || !f) return 0;
+  if (it === f) return 3;
+  if (it.startsWith(f) || f.startsWith(it)) return 2;
+  if (it.includes(f) || f.includes(it)) return 1;
+  return 0;
+}
+
+function matchFolder(itemText, folder) {
+  return matchScore(itemText, folder) > 0;
+}
+
+// Best candidate, or null. A merely-substring match (score 1) is only accepted
+// when it is the single candidate in the whole menu - otherwise it is exactly
+// the ambiguity that used to open the wrong project.
+function bestMatch(items, folder, textOf) {
+  let best = null, bestScore = 0, bestCount = 0;
+  for (const el of items) {
+    const s = matchScore(textOf(el), folder);
+    if (s === 0) continue;
+    if (s > bestScore) { best = el; bestScore = s; bestCount = 1; }
+    else if (s === bestScore) bestCount++;
+  }
+  if (!best) return null;
+  if (bestScore === 1 && bestCount > 1) return null;
+  if (bestScore >= 2 && bestCount > 1) console.warn('[cc-ws] ambiguous folder match for', folder);
+  return best;
 }
 
 // Call React's own event handlers via the fiber tree.
@@ -330,11 +394,8 @@ async function clickWorkspace(conn, folder, wsRow) {
     v: i.getAttribute('data-value') || '',
     r: i.getAttribute('role') || '',
   }));
-  const folderTarget = folderItems.find(el => {
-    const val = el.getAttribute('data-value') || el.getAttribute('value') || '';
-    if (val && matchFolder(val, folder)) return true;
-    return matchFolder(el.textContent, folder);
-  });
+  const folderTarget = bestMatch(folderItems, folder,
+    el => el.getAttribute('data-value') || el.getAttribute('value') || el.textContent);
   const dbg = {
     ts: Date.now(), folder, found: !!folderTarget,
     menuTag: menuRoot ? (menuRoot.getAttribute('role') || menuRoot.tagName) : null,
@@ -450,7 +511,7 @@ async function clickWorkspace(conn, folder, wsRow) {
         .filter(i => ACTION_LABELS.test((i.textContent || '').trim()))
         .map(i => i.textContent.trim());
 
-      const exactTarget = entries.find(el => matchFolder(el.textContent, folder));
+      const exactTarget = bestMatch(entries, folder, el => el.textContent);
       dbg.exactMatchFound = !!exactTarget;
       if (exactTarget) {
         if (!tryFiberClick(exactTarget)) fireClick(exactTarget);
@@ -514,14 +575,17 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // Slightly taller than it needs to be on purpose: these are 11px rows in a
   // dense grid, and an extra pixel of padding is the difference between hitting
   // the project you meant and the one below it.
-  b.style.cssText = 'display:flex;align-items:center;gap:5px;text-align:left;' +
-    'padding:3px 6px;border:0;border-radius:4px;background:transparent;color:inherit;' +
-    'font:inherit;font-size:11px;line-height:1.6;cursor:pointer;' +
-    (compact ? 'justify-content:center;width:auto;' : 'width:100%;');
+  b.style.cssText = 'box-sizing:border-box;display:flex;align-items:center;gap:5px;text-align:left;' +
+    'border:0;border-radius:4px;background:transparent;color:inherit;' +
+    'font:inherit;font-size:11px;cursor:pointer;' +
+    (compact
+      // A real square, so the hit target matches the glyph you can see.
+      ? 'padding:0;width:' + TILE_PX + 'px;height:' + TILE_PX + 'px;flex:none;justify-content:center;'
+      : 'padding:3px 6px;line-height:1.6;width:100%;');
 
   if (emoji) {
     const e = document.createElement('span');
-    e.style.cssText = EMOJI_CSS + (compact ? 'font-size:1.9em;' : '');
+    e.style.cssText = compact ? TILE_CSS : EMOJI_CSS;
     e.textContent = emoji;
     b.appendChild(e);
   }
@@ -574,10 +638,14 @@ function folderGrid(conn, folders, wsRow, opts = {}) {
   // Emoji-only tiles are tiny, so pack them densely; named rows get 2 columns
   // once the list is long enough to be worth splitting.
   if (opts.compact) {
-    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:1px 2px;';
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;';
     folders = folders.filter(f => splitEmoji(f.split('/').filter(Boolean).pop() || f).emoji);
   } else if (folders.length > 4) {
-    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:0 6px;';
+    // minmax(0,1fr), not 1fr. A grid item defaults to min-width:auto, so it
+    // refuses to shrink below its content and overflows its track instead -
+    // which is how the Local column's second column ended up painted 96px into
+    // the Remote column. Measured on the real folder list: 14 of 25 rows spilled.
+    grid.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 6px;';
   }
   for (const folder of folders) grid.appendChild(makeFolderBtn(conn, folder, wsRow, opts));
   return grid;
@@ -743,10 +811,69 @@ const COLLAPSE_KEY = 'cc-ws-collapsed';
 const wsCollapsed = () => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } };
 const setWsCollapsed = v => { try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
 
-let _prevTitle = null, _prevBody = null;
+let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null;
+let _prevFolder = null;   // which folder the preview is currently showing
+let _editing = false;
+let _saveTimer = null;
+
+// Rendered view and edit view are two elements in the same slot, so switching
+// between them can't change the pane's geometry (the whole point of #22).
+function setEditing(on) {
+  if (!_prevBody) return;
+  _editing = !!on && !!_prevFolder;
+  _prevBody.style.display = _editing ? 'none' : '';
+  _prevEdit.style.display = _editing ? '' : 'none';
+  _prevBar.editBtn.textContent = _editing ? 'done' : 'edit';
+  _prevBar.editBtn.title = _editing ? 'Stop editing (changes save as you type)' : 'Edit this TODO.md';
+  if (_editing) {
+    _prevEdit.value = ccTodo(_prevFolder) || '';
+    _prevEdit.focus();
+  }
+}
+
+function setSaveState(msg, bad) {
+  if (!_prevBar) return;
+  _prevBar.status.textContent = msg || '';
+  _prevBar.status.style.color = bad ? '#ef4444' : 'inherit';
+}
+
+// Writes through ccBridge.writeTodo -> cc-write-todo ipcMain handler, which is
+// the only process with fs access. Debounced: this fires on every keystroke.
+function saveTodoSoon() {
+  if (!_prevFolder) return;
+  const folder = _prevFolder, text = _prevEdit.value;
+  setSaveState('…');
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
+      setSaveState('no bridge', true);
+      return;
+    }
+    try {
+      const r = await window.ccBridge.writeTodo(folder, text);
+      if (r && r.ok) {
+        // Keep the in-memory copy in step so hovering away and back, or
+        // re-rendering the panel, doesn't resurrect the pre-edit text.
+        if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
+        window.__CC_TODOS__[folder] = text;
+        setSaveState('saved');
+        setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
+      } else {
+        setSaveState((r && r.error) ? String(r.error).slice(0, 40) : 'save failed', true);
+      }
+    } catch (e) {
+      setSaveState('save failed', true);
+      console.error('[cc-ws] writeTodo', e);
+    }
+  }, 600);
+}
 
 function showTodoPreview(folder) {
   if (!_prevTitle || !_prevBody) return;
+  // Don't yank the pane out from under an in-progress edit just because the
+  // pointer crossed another project on its way to the textarea.
+  if (_editing && folder !== _prevFolder) return;
+  _prevFolder = folder;
   const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
   const text = ccTodo(folder);
   _prevTitle.textContent = name + ' - TODO.md';
@@ -755,6 +882,11 @@ function showTodoPreview(folder) {
   _prevBody.scrollTop = 0;
   if (text) renderMarkdownInto(_prevBody, text);
   else _prevBody.textContent = 'No TODO.md in this folder.';
+  if (_prevBar) {
+    _prevBar.editBtn.style.display = '';
+    _prevBar.openBtn.style.display = '';
+    setSaveState('');
+  }
 }
 
 // Builds the static chrome once. rebuildPanel() only ever refills `list`, so
@@ -807,22 +939,77 @@ function buildShell(panel) {
   const prev = document.createElement('div');
   prev.style.cssText = 'flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;';
 
+  const phead = document.createElement('div');
+  phead.style.cssText = 'flex:none;display:flex;align-items:baseline;gap:6px;margin-bottom:4px;';
+
   const ptitle = document.createElement('div');
-  ptitle.style.cssText = 'flex:none;font-size:10px;font-weight:600;opacity:.55;' +
-    'text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;' +
+  ptitle.style.cssText = 'flex:1;min-width:0;font-size:10px;font-weight:600;opacity:.55;' +
+    'text-transform:uppercase;letter-spacing:.05em;' +
     'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
+  const pstatus = document.createElement('span');
+  pstatus.style.cssText = 'flex:none;font-size:9px;opacity:.6;min-width:30px;text-align:right;';
+
+  const mkAction = (label, title) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;cursor:pointer;' +
+      'font:inherit;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;' +
+      'opacity:.7;padding:1px 3px;border-radius:3px;';
+    b.onmouseenter = () => { b.style.background = 'var(--bg-200,rgba(128,128,128,.18))'; };
+    b.onmouseleave = () => { b.style.background = 'transparent'; };
+    return b;
+  };
+
+  const editBtn = mkAction('edit', 'Edit this TODO.md');
+  editBtn.onclick = e => { e.stopPropagation(); setEditing(!_editing); };
+  // The one-click "open the folder" the panel was missing: ccBridge.openFolder
+  // already existed for this, wired to shell.openPath in the main process.
+  const openBtn = mkAction('open', 'Open this folder in the file manager');
+  openBtn.onclick = e => {
+    e.stopPropagation();
+    if (_prevFolder && window.ccBridge?.openFolder) window.ccBridge.openFolder(_prevFolder);
+  };
+
+  phead.appendChild(ptitle);
+  phead.appendChild(pstatus);
+  phead.appendChild(editBtn);
+  phead.appendChild(openBtn);
+
   const pbody = document.createElement('div');
   pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
     'word-break:break-word;opacity:.85;font-family:inherit;';
 
-  prev.appendChild(ptitle);
+  const pedit = document.createElement('textarea');
+  pedit.spellcheck = false;
+  pedit.style.cssText = 'display:none;box-sizing:border-box;flex:1;min-height:0;width:100%;' +
+    'resize:none;border:1px solid var(--claude-border,rgba(128,128,128,.35));border-radius:5px;' +
+    'padding:6px;background:rgba(255,255,255,.35);color:inherit;' +
+    'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.45;';
+  pedit.oninput = saveTodoSoon;
+  // Keystrokes inside the panel must not reach the app underneath - Claude
+  // binds single-key shortcuts on the document, and typing "n" into a TODO
+  // should not start a new chat.
+  for (const ev of ['keydown', 'keyup', 'keypress']) {
+    pedit.addEventListener(ev, e => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { setEditing(false); showTodoPreview(_prevFolder); }
+    });
+  }
+
+  prev.appendChild(phead);
   prev.appendChild(pbody);
+  prev.appendChild(pedit);
+  _prevEdit = pedit;
+  _prevBar = {wrap: phead, status: pstatus, editBtn, openBtn};
   body.appendChild(list);
   body.appendChild(prev);
   panel.appendChild(head);
   panel.appendChild(body);
 
-  panel._els = {head, htitle, coll, body, list, prev, ptitle, pbody};
+  panel._els = {head, htitle, coll, body, list, prev, phead, ptitle, pbody, pedit};
   _prevTitle = ptitle;
   _prevBody = pbody;
   applyCollapsed(panel);
@@ -860,11 +1047,14 @@ function rebuildPanel() {
   cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
   list.appendChild(cols);
 
-  const seed = L.find(f => ccTodo(f));
+  const seed = _prevFolder || L.find(f => ccTodo(f));
   if (seed) showTodoPreview(seed);
   else {
+    _prevFolder = null;
     _prevTitle.textContent = 'TODO.md';
     _prevBody.textContent = 'Hover a project to preview its TODO.md';
+    // Nothing to edit or open yet, so don't offer to.
+    if (_prevBar) { _prevBar.editBtn.style.display = 'none'; _prevBar.openBtn.style.display = 'none'; }
   }
 
   clampPanel(panel);
@@ -902,7 +1092,11 @@ function installPanel(wsRow) {
   //
   // Sepia rather than near-white: monochrome emoji (☑ ⏱ ✂ …) disappear against
   // #faf9f5 but read clearly against a warm ground.
-  panel.style.cssText = 'position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
+  // box-sizing is explicit because clampPanel sets width/height outright: with
+  // the default content-box the 12px padding and 1px border land OUTSIDE the
+  // computed size, so the box quietly renders 26px wider than the viewport fit
+  // it was just given.
+  panel.style.cssText = 'box-sizing:border-box;position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
     'background:#f2e8d5;' +
     'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
     'border-radius:8px;padding:10px 12px;' +
@@ -1088,14 +1282,17 @@ function cuPct(v) {
   return Math.max(0, Math.min(100, Math.round(v)));
 }
 
-// Neutral until it actually matters. Colouring 30% orange just trains you to
-// ignore the colour.
-function cuColor(pct) {
+// Each bucket keeps its own hue so the chip can drop its text labels and still
+// be readable at a glance, and severity overrides the hue once a number is
+// actually worth reacting to. Colouring 30% orange just trains you to ignore
+// the colour, so nothing warns below 60.
+const CU_HUE = {ctx: '#3b82f6', five_hour: '#d97706', seven_day: '#16a34a'};
+function cuColor(pct, key) {
   if (pct == null) return 'var(--cc-u-dim)';
   if (pct >= 95) return '#ef4444';
   if (pct >= 80) return '#f97316';
   if (pct >= 60) return '#eab308';
-  return 'var(--cc-u-fg)';
+  return (key && CU_HUE[key]) || 'var(--cc-u-fg)';
 }
 
 // ── reset-time parsing (fallback only) ──────────────────────────────────────
@@ -1479,20 +1676,32 @@ function cuInjectCSS() {
     '@media (prefers-color-scheme:dark){:root{--cc-u-bg:#2e2919;--cc-u-fg:#ece5d5;--cc-u-dim:rgba(236,229,213,.42);--cc-u-line:rgba(255,255,255,.14);}}',
     // The wrapper spans the corner but must never eat clicks meant for the app;
     // only the chip itself is interactive.
+    //
+    // -webkit-app-region:no-drag is the whole reason the top corners work at
+    // all. Electron marks the window's top strip as a drag region, and a drag
+    // region swallows pointer events before they reach anything painted inside
+    // it - which is why the chip went dead the moment it moved up there, and
+    // why the app's own top-bar icons are awkward to hit. Opting this element
+    // out puts clicks back.
     '#cc-usage{position:fixed;z-index:2147483000;pointer-events:none;font-family:inherit;' +
-      'font-variant-numeric:tabular-nums;letter-spacing:-.01em;}',
-    '#cc-usage[data-corner="br"]{right:10px;bottom:10px;}',
-    '#cc-usage[data-corner="bl"]{left:10px;bottom:10px;}',
-    '#cc-usage[data-corner="tr"]{right:10px;top:10px;}',
-    '#cc-usage[data-corner="tl"]{left:10px;top:10px;}',
-    '.cc-u-chip{pointer-events:auto;display:inline-flex;align-items:center;gap:9px;' +
+      'font-variant-numeric:tabular-nums;letter-spacing:-.01em;-webkit-app-region:no-drag;}',
+    '#cc-usage[data-corner="br"]{right:12px;bottom:12px;}',
+    '#cc-usage[data-corner="bl"]{left:12px;bottom:12px;}',
+    // Top corners clear the app's own 44px top bar rather than sitting under it.
+    '#cc-usage[data-corner="tr"]{right:12px;top:46px;}',
+    '#cc-usage[data-corner="tl"]{left:12px;top:46px;}',
+    '.cc-u-chip{pointer-events:auto;-webkit-app-region:no-drag;' +
+      'display:inline-flex;align-items:center;gap:7px;' +
       'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
       'border-radius:7px;padding:3px 8px;font-size:10.5px;line-height:1.5;cursor:pointer;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:.55;transition:opacity .12s;user-select:none;}',
+      'box-shadow:0 2px 8px rgba(0,0,0,.14);opacity:.6;transition:opacity .12s;user-select:none;}',
     '#cc-usage:hover .cc-u-chip{opacity:1;}',
-    '.cc-u-chip .k{opacity:.55;font-weight:600;}',
+    // Attached mode: inline inside the app's own composer footer, no card of
+    // its own, inheriting the row's sizing.
+    '.cc-u-chip.attached{background:transparent;border:0;box-shadow:none;opacity:.9;padding:0 4px;}',
     '.cc-u-chip .v{font-weight:700;}',
-    '.cc-u-chip .r{opacity:.5;}',
+    '.cc-u-chip .r{opacity:.45;font-size:9.5px;}',
+    '.cc-u-chip .sep{opacity:.25;}',
     '.cc-u-card{pointer-events:none;display:none;position:absolute;min-width:230px;' +
       'background:var(--cc-u-bg);color:var(--cc-u-fg);border:1px solid var(--cc-u-line);' +
       'border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.5;' +
@@ -1512,7 +1721,61 @@ function cuInjectCSS() {
   document.head.appendChild(s);
 }
 
-let cuRoot = null, cuChipEl = null, cuCardEl = null;
+let cuRoot = null, cuChipEl = null, cuCardEl = null, cuNative = null;
+
+// The app's own usage control - the little circular tracker next to the model
+// name in the composer footer. Found by aria-label, never by class name or
+// position, and guarded to icon-button dimensions so a redesign that reuses the
+// word "usage" on a big container can't get its icon hidden (issues-fixed #18).
+function cuFindNative() {
+  if (cuNative && cuNative.isConnected) return cuNative;
+  cuNative = null;
+  const cands = document.querySelectorAll(
+    'button[aria-label*="usage" i],button[aria-label*="Usage" i],' +
+    'button[aria-label*="limit" i],button[aria-label*="plan" i]');
+  for (const b of cands) {
+    const r = b.getBoundingClientRect();
+    if (r.width === 0 || r.width > 90 || r.height > 60) continue;
+    cuNative = b;
+    break;
+  }
+  return cuNative;
+}
+
+function cuCycleCorner() {
+  const next = CU_CORNERS[(CU_CORNERS.indexOf(cuRoot.dataset.corner) + 1) % CU_CORNERS.length];
+  cuRoot.dataset.corner = next;
+  try { localStorage.setItem(CU_POS_KEY, next); } catch (_) {}
+}
+
+// Sit inside the composer footer next to the app's own control when we can find
+// it, and fall back to a floating corner chip when we can't. Re-checked on the
+// tick because React remounts that footer.
+function cuPlace() {
+  const native = cuFindNative();
+  if (native && native.parentElement) {
+    if (cuRoot.parentElement !== native.parentElement || cuRoot.nextSibling !== native) {
+      native.parentElement.insertBefore(cuRoot, native);
+    }
+    cuRoot.style.position = 'static';
+    cuRoot.style.pointerEvents = 'auto';
+    cuChipEl.classList.add('attached');
+    // Collapse only the icon, never the button: the button stays in the DOM and
+    // stays clickable, which is what keeps the native popover reachable.
+    for (const svg of native.querySelectorAll(':scope > svg, :scope > span > svg')) {
+      svg.style.display = 'none';
+    }
+    native.style.width = '0px';
+    native.style.padding = '0px';
+    native.style.overflow = 'hidden';
+    return true;
+  }
+  if (cuRoot.parentElement !== document.body) document.body.appendChild(cuRoot);
+  cuRoot.style.position = '';
+  cuRoot.style.pointerEvents = '';
+  cuChipEl.classList.remove('attached');
+  return false;
+}
 
 function cuInstall() {
   if (cuRoot && cuRoot.isConnected) return;
@@ -1522,17 +1785,30 @@ function cuInstall() {
   cuRoot.dataset.corner = cuCorner();
   cuChipEl = document.createElement('div');
   cuChipEl.className = 'cc-u-chip';
-  cuChipEl.title = 'Claude usage - click to move to the next corner';
-  cuChipEl.onclick = () => {
-    const next = CU_CORNERS[(CU_CORNERS.indexOf(cuRoot.dataset.corner) + 1) % CU_CORNERS.length];
-    cuRoot.dataset.corner = next;
-    try { localStorage.setItem(CU_POS_KEY, next); } catch (_) {}
+  cuChipEl.title = 'Claude usage - click for the full breakdown, right-click to move it';
+  // Clicking opens the app's own usage popover rather than doing something
+  // custom. That also happens to be the only thing that puts the context-window
+  // figure into the DOM, so it doubles as a manual refresh for `ctx`.
+  cuChipEl.onclick = e => {
+    e.stopPropagation();
+    const native = cuFindNative();
+    if (native) {
+      native.style.width = '';
+      native.style.padding = '';
+      fireClick(native);
+      setTimeout(() => { try { cuScanContext(); cuRender(); } catch (_) {} }, 260);
+      setTimeout(() => { try { cuScanContext(); cuRender(); cuPlace(); } catch (_) {} }, 900);
+    } else {
+      cuCycleCorner();
+    }
   };
+  cuChipEl.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); cuCycleCorner(); };
   cuCardEl = document.createElement('div');
   cuCardEl.className = 'cc-u-card';
   cuRoot.appendChild(cuChipEl);
   cuRoot.appendChild(cuCardEl);
   document.body.appendChild(cuRoot);
+  cuPlace();
 }
 
 function cuBucket(key) {
@@ -1545,17 +1821,17 @@ function cuBucket(key) {
   return {pct: cuPct(b.utilization), resetMs: Number.isFinite(t) ? t : null};
 }
 
-function cuItem(short, pct, resetMs) {
-  const k = document.createElement('span');
-  k.className = 'k';
-  k.textContent = short;
+// No text label: the hue identifies the bucket (blue context, amber 5-hour,
+// green weekly) and the hover card spells all of it out anyway. The labels were
+// most of the chip's width and none of its information.
+function cuItem(key, label, pct, resetMs) {
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'display:inline-flex;gap:3px;align-items:baseline;';
+  wrap.title = label + (pct == null ? ': unknown' : ': ' + pct + '%');
   const v = document.createElement('span');
   v.className = 'v';
   v.textContent = pct == null ? '--' : pct + '%';
-  v.style.color = cuColor(pct);
-  const wrap = document.createElement('span');
-  wrap.style.cssText = 'display:inline-flex;gap:3px;align-items:baseline;';
-  wrap.appendChild(k);
+  v.style.color = cuColor(pct, key);
   wrap.appendChild(v);
   const left = resetMs == null ? null : cuFmtIn(resetMs - Date.now());
   if (left) {
@@ -1571,11 +1847,18 @@ function cuRender() {
   if (!cuRoot || !cuRoot.isConnected) return;
 
   cuChipEl.textContent = '';
-  for (const key of CU_CHIP) {
-    const short = key === 'ctx' ? 'ctx' : (CU_BUCKETS.find(b => b[0] === key) || [, , key])[2];
+  CU_CHIP.forEach((key, i) => {
+    const label = key === 'ctx' ? 'Context window'
+      : (CU_BUCKETS.find(b => b[0] === key) || [, key])[1];
     const b = cuBucket(key);
-    cuChipEl.appendChild(cuItem(short, b ? b.pct : null, b ? b.resetMs : null));
-  }
+    if (i) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = '·';
+      cuChipEl.appendChild(sep);
+    }
+    cuChipEl.appendChild(cuItem(key, label, b ? b.pct : null, b ? b.resetMs : null));
+  });
 
   cuCardEl.textContent = '';
   const addRow = (label, pct, resetMs, extra) => {
@@ -1660,6 +1943,7 @@ function installUsage() {
   setInterval(() => {
     if (document.hidden) return;
     if (!cuRoot || !cuRoot.isConnected) cuInstall();
+    try { cuPlace(); } catch (_) {}
     try { cuScanContext(); } catch (_) {}
     cuRender();
   }, CU_TICK_MS);
@@ -1674,11 +1958,176 @@ function installUsage() {
     return {
       org: cuOrg, plan: cuPlan, planAgeMs: cuPlanAt ? Date.now() - cuPlanAt : null,
       ctx: cuCtx, failures: cuFailures, corner: cuRoot && cuRoot.dataset.corner,
+      attachedTo: cuNative ? (cuNative.getAttribute('aria-label') || cuNative.tagName) : null,
       refresh: () => cuPoll(),
       probe: on => { try { localStorage.setItem(CU_PROBE_KEY, on ? '1' : '0'); } catch (_) {} },
       parseResetText,
     };
   };
+}
+
+// ── "approaching your weekly limit" nag ─────────────────────────────────────
+//
+// Dismissed rather than hidden where possible: clicking the app's own close
+// control makes the app remember, so it stays gone instead of being re-rendered
+// and re-hidden forever. Hiding is the fallback.
+//
+// Every guard here exists because of issues-fixed #18, where a hider matched a
+// container that had grown to wrap the whole app and blanked the page: this
+// only ever touches a box that is small, is not the app root, and does not
+// contain the composer.
+const CU_NAG_KEY = 'cc-hide-limit-nag';
+const CU_NAG_RE = /approaching\s+(?:your\s+)?(?:weekly|usage|5-hour)\s+limit|you(?:'|’)?re\s+approaching|approaching\s+the\s+limit/i;
+const _cuSeenNags = new WeakSet();
+
+function dismissLimitNags() {
+  try { if (localStorage.getItem(CU_NAG_KEY) === '0') return; } catch (_) {}
+  const scope = document.querySelectorAll(
+    '[role="dialog"],[role="alertdialog"],[role="alert"],[role="status"],' +
+    '[data-state="open"],[data-radix-popper-content-wrapper]');
+  for (const el of scope) {
+    if (_cuSeenNags.has(el)) continue;
+    const r = el.getBoundingClientRect();
+    // Toast-or-banner sized only. A full-screen overlay is not this.
+    if (r.height === 0 || r.height > 320 || r.width > 760) continue;
+    if (el === document.body || el === document.documentElement) continue;
+    if (el.querySelector('textarea,[contenteditable="true"],form')) continue;
+    const text = el.innerText || '';
+    if (!CU_NAG_RE.test(text)) continue;
+    _cuSeenNags.add(el);
+    const close = [...el.querySelectorAll('button')].find(b => {
+      const lbl = (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '');
+      return /close|dismiss|got it|okay|ok\b|not now/i.test(lbl);
+    });
+    if (close) {
+      console.log('[cc-usage] dismissing limit nag via its own close button');
+      fireClick(close);
+    } else {
+      console.log('[cc-usage] hiding limit nag (no close button found)');
+      el.style.display = 'none';
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  DOM BEACON
+//  CDP is still gated behind a signed CLAUDE_CDP_AUTH token (issues-fixed #1),
+//  so there is no way to inspect the live renderer from outside the app. The
+//  only channel out is the renderer log:
+//      ~/.config/Claude/logs/claude.ai-web.log
+//  console.error lands there, so this dumps a bounded, structured survey of the
+//  few DOM facts a feature needs before it can be written safely. Same trick as
+//  the ccDiag() beacon that diagnosed the blank-page bug (issues-fixed #18),
+//  kept around this time instead of deleted, because every UI feature here dies
+//  the same death: a selector guessed instead of measured.
+//
+//  Runs once, ~6s after load. Re-run any time from DevTools: window.__ccDump()
+//  Turn the automatic run off with localStorage['cc-diag'] = '0'.
+// ─────────────────────────────────────────────────────────────
+
+const DIAG_KEY = 'cc-diag';
+const DIAG_MAX = 12;
+
+function dgRect(el) {
+  const r = el.getBoundingClientRect();
+  return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+}
+
+function dgDesc(el) {
+  const cls = (typeof el.className === 'string' ? el.className : '').trim().slice(0, 90);
+  return {
+    tag: el.tagName.toLowerCase(),
+    label: (el.getAttribute('aria-label') || '').slice(0, 60) || undefined,
+    cls: cls || undefined,
+    rect: dgRect(el),
+  };
+}
+
+// Which ancestors are actually constraining the chat column's width. Reports
+// the computed max-width rather than a class name, so it works whether the cap
+// comes from a Tailwind utility, an inline style, or a container query.
+function dgWidthChain() {
+  const anchor =
+    document.querySelector('[data-testid*="message" i]') ||
+    document.querySelector('main p, main article') ||
+    document.querySelector('main');
+  if (!anchor) return {note: 'no anchor found'};
+  const chain = [];
+  for (let el = anchor; el && el !== document.documentElement && chain.length < DIAG_MAX; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    if (cs.maxWidth !== 'none' || cs.width.endsWith('ch')) {
+      chain.push({...dgDesc(el), maxWidth: cs.maxWidth, width: cs.width, margin: cs.marginLeft});
+    }
+  }
+  return {anchor: dgDesc(anchor), constrained: chain};
+}
+
+// The top bar, and specifically which parts of it are drag regions - a drag
+// region eats pointer events, which is why controls up there feel dead.
+function dgTopBar() {
+  const out = [];
+  for (const el of document.querySelectorAll('button,[role="button"],[data-top-left],header,nav')) {
+    const r = el.getBoundingClientRect();
+    if (r.height === 0 || r.top > 56) continue;
+    const cs = getComputedStyle(el);
+    out.push({
+      ...dgDesc(el),
+      appRegion: cs.webkitAppRegion || cs.getPropertyValue('-webkit-app-region') || undefined,
+    });
+    if (out.length >= DIAG_MAX) break;
+  }
+  return out;
+}
+
+function dgUsageButtons() {
+  const sel = 'button[aria-label*="usage" i],button[aria-label*="limit" i],button[aria-label*="plan" i]';
+  return [...document.querySelectorAll(sel)].slice(0, DIAG_MAX).map(b => ({
+    ...dgDesc(b),
+    svgChildren: b.querySelectorAll('svg').length,
+    text: (b.textContent || '').trim().slice(0, 40),
+    parentCls: (typeof b.parentElement?.className === 'string' ? b.parentElement.className : '').slice(0, 90),
+  }));
+}
+
+function dgNags() {
+  const out = [];
+  const sel = '[role="dialog"],[role="alert"],[role="alertdialog"],[role="status"],[data-state="open"]';
+  for (const el of document.querySelectorAll(sel)) {
+    const t = (el.innerText || '').trim();
+    if (!t || t.length > 400) continue;
+    if (!/limit|usage|approaching/i.test(t)) continue;
+    out.push({...dgDesc(el), text: t.replace(/\s+/g, ' ').slice(0, 160),
+              buttons: [...el.querySelectorAll('button')].slice(0, 6)
+                .map(b => ((b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30)))});
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+function ccDump() {
+  const out = {
+    at: new Date().toISOString(),
+    path: location.pathname,
+    viewport: [window.innerWidth, window.innerHeight],
+    zoom: +(window.devicePixelRatio || 1).toFixed(2),
+    usageButtons: dgUsageButtons(),
+    topBar: dgTopBar(),
+    widthChain: dgWidthChain(),
+    nags: dgNags(),
+    bridge: Object.keys(window.ccBridge || {}),
+  };
+  // One line, so it is greppable in a log full of React noise.
+  console.error('[cc-dump] ' + JSON.stringify(out));
+  return out;
+}
+
+function dgBootstrap() {
+  window.__ccDump = ccDump;
+  let off = false;
+  try { off = localStorage.getItem(DIAG_KEY) === '0'; } catch (_) {}
+  if (off) return;
+  // Late enough that the composer footer and sidebar have rendered.
+  setTimeout(() => { try { ccDump(); } catch (e) { console.error('[cc-dump] failed', e); } }, 6000);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1865,6 +2314,9 @@ function scan() {
   // The panel lives on <body> now, so nothing tears it down when its row goes;
   // this also re-clamps it against a row that has moved (sidebar toggle).
   prunePanels();
+  // 2s is the right cadence for a toast: fast enough that it barely registers,
+  // slow enough not to be a hot loop.
+  try { dismissLimitNags(); } catch (_) {}
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;
@@ -1889,6 +2341,7 @@ function bootstrap() {
   // one IIFE scope, so an exception here would otherwise take the project panel
   // down with it.
   try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
+  try { dgBootstrap(); } catch (e) { console.error('[cc-dump] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});
   setInterval(scan, 2000);
