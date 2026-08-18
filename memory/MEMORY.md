@@ -6,7 +6,7 @@
 - [debugging.md](debugging.md) - console markers, log files, localStorage state, constraints
 - [design-decisions.md](design-decisions.md) - whitelist guards, absolute timestamps, DOM scanner patterns
 - [maintenance.md](maintenance.md) - deploy workflow, folder renames, AppImage upgrades
-- [issues-fixed.md](issues-fixed.md) - bug history with root causes (#1-25)
+- [issues-fixed.md](issues-fixed.md) - bug history with root causes (#1-29)
 - [perf-security.md](perf-security.md) - security and performance review
 
 ## Notes

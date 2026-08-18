@@ -13,6 +13,9 @@ staleness warning.
 | **Workspace/project selector panel** | Hover-triggered two-column panel (Local / Myserver) on new-session pages. Local column loads live via `cc-ai-data-v2` IPC, falls back to baked `CC_AI_LOCAL`. `custom-ui/workspace.js` |
 | **Workspace folder click** | Arms path via `ccBridge.armFolder(path)`; patched `browseFolder` in the main bundle returns it without an OS dialog. |
 | **TODO.md previews** | Panel renders each folder's `TODO.md` as markdown on hover; live via `cc-ai-data-v2`, baked fallback via `CC_AI_TODOS`. |
+| **TODO.md editing** (2026-08-18) | `edit` in the preview header swaps the rendered view for a textarea in the same slot (so geometry can't shift), autosaving through `cc-write-todo`. That handler only ever writes `TODO.md`, only under `~/Documents/AI Projects`, via temp-file + rename. `open` reveals the folder in the file manager. |
+| **Limit-nag dismissal** (2026-08-18) | "Approaching your weekly limit" toasts get their own close button clicked, so the app remembers. Off with `localStorage['cc-hide-limit-nag']='0'`. |
+| **DOM beacon** (2026-08-18) | `custom-ui/diag.js`. The replacement for CDP, which is still blocked. See [debugging.md](debugging.md). |
 | **Ctrl+Q quit** | Clean shutdown via IPC (channel UUID extracted dynamically at patch time - see `memory/maintenance.md`). Preload-level, not in `custom-ui/`. |
 | **Usage readout** (2026-08-18) | Fixed corner chip: context %, 5-hour %, weekly %, each with time-to-reset. Hover for every bucket the account has. Polls `/api/organizations/<org>/usage` (see [architecture.md](architecture.md#plan-usage-endpoint-2026-08-18-discovery)), so it is genuinely live rather than a snapshot of whatever the popover last showed. `custom-ui/usage.js` |
 

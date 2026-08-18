@@ -23,7 +23,21 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       at once. Needs live DOM inspection (devtools or a screenshot) before any fix; no blind
       selector guess, given how fragile the hiders have been ([issues-fixed.md](memory/issues-fixed.md) #18).
 
+- [ ] **Full-width chat column** `S` - the transcript is capped to a readable measure; user wants
+      it to use the whole window. Blocked on knowing *what* caps it: read `widthChain` out of the
+      next `[cc-dump]` line (see [debugging.md](memory/debugging.md)) and write a CSS override
+      against the computed `max-width`, not against a guessed Tailwind class.
+
 ## 🤔 Needs your call
+
+- [ ] **Remove the top bar** `M` `think` - user wants the row gone (back/forward unused, magnifier
+      has a shortcut, sidebar toggle unused) to reclaim vertical space. The catch: that row *is*
+      the window's titlebar. It carries the drag region and the minimise/maximise/close controls,
+      so removing it outright leaves no way to move or close the window with the mouse. Three
+      options: hide only the left button cluster (keeps the bar's height, reclaims nothing); shrink
+      the bar; or remove it and re-enable the KDE titlebar instead (the "KDE titlebar no longer
+      hidden" item below is the same knob). Also note #18: a blanket attribute-selector hider on
+      this row blanked the whole app once already.
 
 - [ ] **KDE titlebar no longer hidden** `S` - a manual System Settings step, not a code change.
       Window Management → Window Rules → Add → focus Claude Desktop → "Detect Window Properties"

@@ -1,6 +1,6 @@
 # Known Issues - Fixed
 
-Full bug history with root causes (#1-25). For the current state of features, see
+Full bug history with root causes (#1-29). For the current state of features, see
 [TODO.md](../TODO.md).
 
 ---
@@ -361,3 +361,71 @@ relative ("in 2h 15m", "resets 59m"), weekday+clock, month+day, numeric dates an
 
 **Lesson:** when a value is only in the DOM while a transient popover is open, the popover is not
 the data source, and no scraping strategy will make it one.
+
+---
+
+## 26. Local column painted into the SSH column (2026-08-18)
+
+**Symptom:** "you overlap the local projects with my SSH projects." Not sometimes - always.
+
+**Root cause:** `folderGrid` used `grid-template-columns:1fr 1fr`. A grid item defaults to
+`min-width:auto`, so it refuses to shrink below its content width and overflows its track rather
+than ellipsising. The column box was 215px; items rendered 96px past its right edge, straight over
+the Remote column.
+
+**Fix:** `minmax(0,1fr)`. Measured on the real 25-folder list: 14 rows spilled before, 0 after.
+
+**Lesson:** `1fr` does not mean "at most half". Any grid or flex track holding text that must
+ellipsise needs `minmax(0,1fr)` or `min-width:0`.
+
+---
+
+## 27. Emoji-only tiles had a 6px hit box (2026-08-18)
+
+**Symptom:** "when it's on emoji only, the emojis overlap. Like, the line height is extremely low,
+and I can't hover or select any of them."
+
+**Root cause:** `EMOJI_CSS` sets `line-height:0`, deliberately, so an oversized emoji doesn't grow
+a *named* row. In a compact tile the emoji span is the button's only child, so the button's
+content height collapsed to zero and the whole tile measured 38x6px while painting a 21px glyph.
+Rows sat 7px apart, so consecutive glyphs drew over each other and the clickable slivers were too
+thin to hit. #19 and #23 both touched emoji-only mode without measuring a rendered tile.
+
+**Fix:** compact tiles get an explicit 30x30 box and `line-height:1` (`TILE_CSS`), independent of
+`EMOJI_CSS`. Verified: 25 tiles, all 30x30, 0 overlapping pairs.
+
+**Lesson:** `line-height:0` on the only child of a flex button collapses the button. The trick is
+safe only where a sibling sets the height.
+
+---
+
+## 28. Unreadable tofu tiles at the bottom of the SSH list (2026-08-18)
+
+**Symptom:** reported again after #21 supposedly fixed it.
+
+**Root cause:** #21 sanitized on **write**. Entries already in `cc-ws-v4` from before that fix were
+never touched, and one of them was labelled with nothing but zero-width spaces - which cannot be
+clicked *or* right-clicked, so "right-click to forget" could never remove it either.
+
+**Fix:** `loadWS()` cleans on read, drops any entry with no `\p{L}\p{N}` left, and rewrites the
+store once so it stays clean.
+
+**Lesson:** a validation fix that only runs on write leaves every existing row broken forever.
+Sanitize on read, or migrate explicitly.
+
+---
+
+## 29. Anything in the top bar is unclickable, including the usage chip (2026-08-18)
+
+**Symptom:** "when the remaining time thing is going to the top bar, I can't select it either" -
+and the same complaint about the app's own top-bar icons.
+
+**Root cause:** not the chip, and not a z-index problem. Electron marks the window's top strip as
+a **drag region** (`-webkit-app-region: drag`) so the frameless window can be moved. A drag region
+consumes pointer events before anything painted inside it receives them.
+
+**Fix:** `-webkit-app-region: no-drag` on the usage chip, plus a 46px top offset so the top corners
+clear the bar rather than sitting under the window controls.
+
+**Lesson:** "it renders but won't take clicks, only near the top of the window" is a drag region,
+every time. Nothing about stacking order will fix it.

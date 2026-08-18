@@ -27,6 +27,8 @@ JSON.parse(localStorage.getItem('cc-usage-snap')) // last /usage payload {plan, 
 localStorage.getItem('cc-usage-org')              // cached organization uuid
 localStorage.getItem('cc-usage-corner')           // br|bl|tr|tl - where the usage chip sits
 localStorage.getItem('cc-usage-probe')            // '1' = log candidate usage payloads
+localStorage.getItem('cc-hide-limit-nag')         // '0' = stop dismissing "approaching your limit"
+localStorage.getItem('cc-diag')                   // '0' = stop the automatic [cc-dump] beacon
 ```
 
 Keys from the deleted features (`cc-reset-v1`, `cc-cache-v4`, `cc-ratelimit`, `cc-ring-diag`,
@@ -38,7 +40,17 @@ Keys from the deleted features (`cc-reset-v1`, `cc-cache-v4`, `cc-ratelimit`, `c
 window.__ccUsage()          // {org, plan, planAgeMs, ctx, failures, corner, refresh(), probe(bool)}
 window.__ccUsage().refresh()// force a /usage poll now
 window.__ccTitleDebug()     // which titlewatch strategy is winning
+window.__ccDump()           // one-line DOM survey; also auto-runs 6s after load
 ```
+
+`__ccDump()` writes to `console.error`, so it lands in `claude.ai-web.log`. Read it back with:
+
+```bash
+grep -o '\[cc-dump\] .*' ~/.config/Claude/logs/claude.ai-web.log | tail -1
+```
+
+This is the only live-DOM channel out of the app - CDP is still gated behind a signed
+`CLAUDE_CDP_AUTH` token (#1), so `scripts/cdp.py` cannot attach.
 
 ## Clearing UI state
 
