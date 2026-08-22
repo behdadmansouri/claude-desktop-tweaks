@@ -16,3 +16,9 @@ Thumbs.db
 
 # Python bytecode from scripts/
 __pycache__/
+
+# Bundle artifacts copied out of the asar for manual inspection.
+# update-ui.sh extracts its own copies to /tmp/claude-ui-work; nothing here reads these.
+/index.js
+/mainView.js
+/index.chunk-*.js
