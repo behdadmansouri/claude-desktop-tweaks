@@ -60,10 +60,13 @@ Type=oneshot
 # Exit 3 is claude-ctl's "the app is running, not touching it" - the normal
 # outcome most of the time, and not a failure worth a red unit or an alert.
 SuccessExitStatus=0 3
-ExecStart=$SCRIPT_DIR/claude-ctl.sh update
+# QUOTED: this project lives under "Documents/AI Projects/Claude Desktop 🤖".
+# systemd splits ExecStart on whitespace, so an unquoted path here fails with
+# 203/EXEC trying to run "/home/z3z0/Documents/AI".
+ExecStart="$SCRIPT_DIR/claude-ctl.sh" update
 # Regenerate the dashboard afterwards so the page is never staler than the last
 # tick. Leading - so a rendering problem cannot fail the update itself.
-ExecStartPost=-$SCRIPT_DIR/claude-ctl.sh page
+ExecStartPost=-"$SCRIPT_DIR/claude-ctl.sh" page
 # Long enough for a ~170MB .deb on a slow line, short enough to not wedge.
 TimeoutStartSec=30min
 Nice=10
@@ -75,11 +78,17 @@ cat > "$UNIT_DIR/$TIMER" <<EOF
 Description=Periodic Claude Desktop update check
 
 [Timer]
-# First run shortly after login, then every two hours. The app is usually up, so
-# most ticks cost one pgrep; the frequency is really about catching the window
-# after you quit rather than about polling upstream often.
-OnStartupSec=10min
-OnUnitActiveSec=2h
+# Every two hours, on an ABSOLUTE schedule.
+#
+# The first version used OnStartupSec + OnUnitActiveSec and scheduled nothing at
+# all - `list-timers` showed NEXT as "-". OnUnitActiveSec only arms itself once
+# the service has run, so with a startup trigger that had long since elapsed
+# there was no first run to bootstrap from. OnCalendar always has a next
+# occurrence, whenever it is enabled.
+#
+# The app is usually up, so most ticks cost a single pgrep and exit; the cadence
+# is about catching the window after you quit, not about polling upstream often.
+OnCalendar=*-*-* 00/2:17:00
 # Do not stack missed runs from a suspended laptop into a burst on resume.
 AccuracySec=5min
 Persistent=false
