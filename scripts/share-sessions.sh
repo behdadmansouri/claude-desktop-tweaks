@@ -25,9 +25,21 @@
 # Electron processes risks LevelDB corruption. The session index is plain
 # per-session JSON files, which is why it is safe to share and the rest is not.
 #
-# Still: do not run both builds at once against a shared index. Two processes
-# rewriting the same local_*.json will race. This script refuses while the
-# official build is running; it cannot tell whether you are about to start it.
+# Running both builds at once against the shared index is FINE. That was an
+# over-cautious warning in the first version of this script; the directory was
+# then actually looked at:
+#
+#   347 local_*.json          one file per session, written only by the app that
+#                             owns that session - two apps cannot collide
+#    18 deleted_*
+#     1 scheduled-tasks.json   <- the only shared mutable file
+#
+# So the whole race surface is that one file, plus deliberately opening the SAME
+# session in both apps. Both are small and recoverable. The thing that genuinely
+# cannot be shared is the rest of the profile - Local Storage / IndexedDB /
+# Session Storage are LevelDB, which corrupts under two live processes, and
+# Electron guards it with a SingletonLock. That is why the profiles stay split
+# and only this one directory is linked.
 #
 # Reverse it with: --undo
 set -euo pipefail
@@ -53,9 +65,12 @@ if [[ "${1:-}" == "--undo" ]]; then
   exit 0
 fi
 
+# Warn rather than refuse. The swap itself is a mv plus a symlink, and an app
+# holding a file open keeps reading the old inode until it reopens - so the only
+# real cost of doing this live is that the official build shows a stale list
+# until it is restarted.
 if pgrep -f "claude-desktop-official" >/dev/null 2>&1; then
-  echo "REFUSING: the official build is running. Quit it first." >&2
-  exit 1
+  echo "NOTE: the official build is running; restart it afterwards to see the shared list." >&2
 fi
 
 if [[ ! -d "$PAT" ]]; then

@@ -13,3 +13,6 @@ Thumbs.db
 # Agent worktrees and machine-local harness settings
 /.claude/worktrees/
 /.claude/settings.local.json
+
+# Python bytecode from scripts/
+__pycache__/

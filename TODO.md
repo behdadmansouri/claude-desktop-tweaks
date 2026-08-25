@@ -28,15 +28,22 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       next `[cc-dump]` line (see [debugging.md](memory/debugging.md)) and write a CSS override
       against the computed `max-width`, not against a guessed Tailwind class.
 
-- [ ] **Trace the second sleep inhibitor** `M` - KDE shows two, and only one is ours to fix. The
-      Electron one is handled ([issues-fixed.md](memory/issues-fixed.md) #43); the other reads
-      "Claude Desktop is blocking screen locking. (Capturing)" and is a Chromium *capture*
-      inhibitor, not `powerSaveBlocker`. Owner unknown - likely a getUserMedia/getDisplayMedia
-      grab that is never released, possibly the Cowork VM. Start by checking whether it persists
-      with the Cowork VM stopped.
+- [ ] **Confirm the native window frame after restart** `S` - the main window now asks for
+      `titleBarStyle:"default"` on Linux, so KWin should draw a real titlebar. Unknown until a
+      restart: whether the app *also* still draws its own close/maximize row in HTML. If it does,
+      measure it with the `[cc-dump]` beacon before touching a selector - a blind guess at the top
+      bar is what blanked the page in July ([issues-fixed.md](memory/issues-fixed.md) #18). Revert
+      is one hunk in `update-ui.sh` (search `__ccNativeFrame`).
 
-- [ ] **Verify the keep-awake governor over a real idle night** `S` - grep `[cc-keep-awake]` in
-      `~/.config/Claude/logs/main.log`. Expect `working` while sessions run and `idle` within ~30
+- [ ] **Catch the "Capturing" inhibitor in the act** `S` - it is **not** permanent. A live check
+      (`claude-ctl` prints the list) found only the Electron `powerSaveBlocker` and Chromium
+      "Playing audio" - no Capturing entry. So it is a Chromium **media-capture** inhibitor tied
+      to an open mic/camera/screen-capture stream, most likely dictation, and it releases when the
+      stream does. Next time it shows up, run `claude-ctl` and note what else is holding one.
+      Nothing to fix unless it is still held with no capture running.
+
+- [ ] **Verify the keep-awake governor over a real idle night** `S` - `claude-ctl` reports the last
+      state; raw lines are `[cc-keep-awake]` in `~/.config/Claude/logs/main.log`. Expect `working` while sessions run and `idle` within ~30
       min of stopping, plus a matching `[keep-awake] stopped`. If it flips to `idle` mid-run,
       raise the window: `CC_KEEPAWAKE_IDLE_MIN=60`.
 

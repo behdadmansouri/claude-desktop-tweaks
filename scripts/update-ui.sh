@@ -609,6 +609,39 @@ if "cc-open-folder" not in ix:
 else:
     print("  cc-open-folder ipcMain handler already present in main bundle")
 
+# -- Hand the window frame back to KWin. --------------------------------------
+#
+#    The main window is created with titleBarStyle:"hidden", which on Linux means
+#    no window manager decoration at all - so the app has to draw its own close /
+#    maximize controls in HTML, and you lose every KDE affordance that hangs off
+#    a real titlebar (window rules, tiling shortcuts, the window menu, snapping).
+#    titleBarOverlay is set alongside it but is Windows-only in this build (the
+#    app's own guard logs "titleBarOverlay only works on Windows"), so on Linux
+#    it is simply a frameless window.
+#
+#    "default" restores frame:true, and KWin decorates it like any other window.
+#    Kept conditional on Linux so the same patch stays harmless if it is ever run
+#    against another platform's build.
+#
+#    Matched on the minWidth/minHeight pair because titleBarStyle:"hidden"
+#    appears twice - the other one is the Quick Entry overlay, which is SUPPOSED
+#    to be frameless and must not be touched.
+_tb = 'minWidth:600,minHeight:400,titleBarStyle:"hidden"'
+if "__ccNativeFrame" in ix:
+    print("  Native window frame already patched")
+elif ix.count(_tb) == 1:
+    # The marker is a COMMENT, not an extra option: these options are handed to
+    # a validator that whitelists keys, so an unknown one risks the main window
+    # failing to create at all.
+    ix = ix.replace(_tb, 'minWidth:600,minHeight:400,/*__ccNativeFrame*/'
+                         'titleBarStyle:process.platform==="linux"?"default":"hidden"')
+    ix_changed = True
+    print("  Main window handed to the window manager (titleBarStyle default on Linux)")
+elif ix.count(_tb) == 0:
+    print("  WARNING: main-window titleBarStyle signature not found - frame left as-is")
+else:
+    raise RuntimeError("main-window titleBarStyle signature is no longer unique")
+
 # -- Make "keep computer awake" mean "while working", not "while running". -----
 #
 #    The app claims powerSaveBlocker('prevent-app-suspension') once, at startup,
