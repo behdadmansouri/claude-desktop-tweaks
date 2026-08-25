@@ -28,6 +28,18 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       next `[cc-dump]` line (see [debugging.md](memory/debugging.md)) and write a CSS override
       against the computed `max-width`, not against a guessed Tailwind class.
 
+- [ ] **Trace the second sleep inhibitor** `M` - KDE shows two, and only one is ours to fix. The
+      Electron one is handled ([issues-fixed.md](memory/issues-fixed.md) #43); the other reads
+      "Claude Desktop is blocking screen locking. (Capturing)" and is a Chromium *capture*
+      inhibitor, not `powerSaveBlocker`. Owner unknown - likely a getUserMedia/getDisplayMedia
+      grab that is never released, possibly the Cowork VM. Start by checking whether it persists
+      with the Cowork VM stopped.
+
+- [ ] **Verify the keep-awake governor over a real idle night** `S` - grep `[cc-keep-awake]` in
+      `~/.config/Claude/logs/main.log`. Expect `working` while sessions run and `idle` within ~30
+      min of stopping, plus a matching `[keep-awake] stopped`. If it flips to `idle` mid-run,
+      raise the window: `CC_KEEPAWAKE_IDLE_MIN=60`.
+
 ## 🤔 Needs your call
 
 - [ ] **Confirm the top bar hider picked the right element** `S` - decided and shipped
@@ -50,10 +62,19 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## 📋 Backlog
 
-- [ ] **Bring `titlewatch.js` to the official app, or don't** `M` - the official build has no
-      custom UI, so its window title stays `"Claude"` and Timekeeper's ActivityWatch watcher
-      learns nothing from it. Only matters if the official app becomes the daily driver.
+- [x] **Bring `titlewatch.js` to the official app, or don't** `M` - done 2026-08-25, and the whole
+      custom UI came with it rather than titlewatch alone. `update-ui.sh --official` patches
+      `~/.local/lib/claude-desktop-official`; everything is located by content signature, so no
+      version pinning was needed. Caveat: `install-official.sh` replaces the whole prefix, so
+      re-run the patch after every official update. Not yet applied - there is a pending update
+      (1.26832.0 → 1.34493.1), so install that first.
 
-## ❌ Not planned
+- [ ] **Decide whether the official build should share the session index** `S` - the script exists
+      (`scripts/share-sessions.sh`, `--undo` to reverse) but has not been run. It symlinks only
+      `claude-code-sessions/`; transcripts under `~/.claude/projects/` are already shared and
+      claude.ai chats are server-side, so that link is the entire difference. Never run both
+      builds at once against it.
 
-- **Workspace "New Project on SSH"** - needs main-process IPC to create remote directories.
+## Draft
+Not planned: workspace "New Project on SSH" - needs main-process IPC to create remote
+directories, not currently worth the scope.

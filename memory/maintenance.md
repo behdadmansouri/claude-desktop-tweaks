@@ -150,3 +150,25 @@ The script checks for them and prints the fix if they're missing.
 Run `./scripts/update-ui.sh`, fully quit the app, restart, verify `[custom-ui] ok` in the
 console and confirm visually. The injection fails gracefully -- errors are caught and logged,
 they don't kill the app.
+
+## The update dead end, and the way out (2026-08-21)
+
+State of play:
+
+- **Official build** updates fine: `scripts/install-official.sh` (currently 1.26832.0 installed,
+  **1.32885.1 available**).
+- **Patched build** cannot update. `claude-desktop-appimage` was dropped from the AUR on 2026-08-14,
+  so `scripts/update-appimage.sh` has nothing to pull. It is frozen at 3.2.1+claude1.24012.9.
+
+The way out is **not** abandoning the patched build. The official `.deb` payload has the *same*
+`.vite/build` layout that `update-ui.sh` patches - `mainView.js` plus a content-hashed main chunk -
+so the custom UI could be applied on top of the official build, giving a maintained upstream and the
+project panel at the same time, still as two separate installs on two profiles.
+
+It is not a drop-in, and this was checked rather than assumed: the `$eipc_message$_<uuid>_$_` marker
+that `update-ui.sh` extracts for the Ctrl+Q handler is **not present** in the official 1.26832.0
+`mainView.js`, so that step would `raise RuntimeError` today. Making the rebase work means at least
+generalising or making optional that UUID extraction, and re-checking the `browseFolder` signature
+patch. The aaddrick launcher's automatic GPU-crash fallback would also need porting or dropping.
+
+Not attempted yet. Sized as a session of its own, not a step inside another change.

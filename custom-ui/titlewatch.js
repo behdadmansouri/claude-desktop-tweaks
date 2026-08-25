@@ -115,6 +115,18 @@ function twApply() {
   if (title === twLast && document.title === twLast) return;
   twLast = title;
   try { document.title = title; } catch (_) {}
+  // ...and set the NATIVE window title too.
+  //
+  // document.title alone was never enough, which took a while to notice because
+  // it looks like it should be: Electron normally mirrors the page title onto
+  // the BrowserWindow. Something in this app suppresses that - every event in
+  // ActivityWatch's window bucket read {"app":"Claude","title":"Claude"} the
+  // whole time this module has been running. `ccBridge.setTitle` goes straight
+  // to `win.setTitle()` in the main process, which nothing overrides, and that
+  // is what a window-title watcher can actually see.
+  try {
+    if (window.ccBridge && window.ccBridge.setTitle) window.ccBridge.setTitle(title);
+  } catch (_) {}
 }
 
 let _twTimer = null;

@@ -30,7 +30,14 @@ function injectBaseCSS() {
     '@media (prefers-color-scheme:dark){' +
       '.cc-ws-panel{background:#2e2919!important;border-color:rgba(255,255,255,.12)!important;}' +
       '.cc-ws-panel button{color:inherit!important;}' +
+      '.cc-ws-panel select{color:inherit!important;}' +
+      // The file picker's dropdown is painted by the platform, not by the page,
+      // so it does not inherit the panel's colours - color:inherit on the
+      // <select> alone leaves the open list as dark-on-dark. The options need
+      // their own pair.
+      '.cc-ws-panel select option{color:#ece5d5;background:#2e2919;}' +
     '}',
+    '.cc-ws-panel select option{color:#1a1a1a;background:#f5f0e6;}',
   ].join('\n');
   document.head.appendChild(s);
 }

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/check-updates.sh\" --report; setsid \"$CLAUDE_PROJECT_DIR/scripts/check-updates.sh\" >/dev/null 2>&1 < /dev/null & disown; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

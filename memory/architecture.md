@@ -214,3 +214,40 @@ a valid `CLAUDE_CDP_AUTH` token (signed with Anthropic's Ed25519 key), the app c
 `update-ui.sh` + restart. Console output goes to:
 - `~/.config/Claude/logs/claude.ai-web.log` - renderer-level (React errors, `console.error`)
 - `~/.config/Claude/logs/main-window.log` - preload-level (JS errors in mainView.js)
+
+## ccBridge IPC channels (2026-08-21)
+
+Everything the renderer can ask the main process to do. The renderer and preload are both
+sandboxed - no `fs`, no `child_process` - so each of these exists because the panel needed a fact
+or an effect that only the main process can produce. All are appended to the main bundle by
+`update-ui.sh`; the doc/ssh group lives inside `/*cc-block:docs*/ … /*cc-block:docs-end*/` and is
+removed-and-rewritten on every run, so editing it in the script is enough (no manual cleanup).
+
+| Channel | Bridge method | Does |
+|---|---|---|
+| `cc-ai-data-v2` | (auto, on load) | Live folder list + each folder's `TODO.md`, read fresh at page load so renames don't need a re-patch |
+| `cc-arm-folder` | `armFolder(p)` | Stores a path that the next `browseFolder` returns instead of opening the OS picker (8s window) |
+| `cc-open-folder` | `openFolder(p)` | `shell.openPath` |
+| `cc-write-todo-v2` | `writeTodo(p,t)` | Legacy TODO-only writer, kept so an app patched by an older `update-ui.sh` still saves |
+| `cc-list-docs-v2` | `listDocs(p)` | `.md`/`.txt` files in a project folder, `TODO.md` first, max 40 |
+| `cc-read-doc-v2` | `readDoc(p,f)` | One document, max 200 KB |
+| `cc-write-doc-v2` | `writeDoc(p,f,t)` | Writes it back, tmp+rename, previous content snapshotted to `~/.config/Claude/todo-backups/<project>/<file>.<iso>.md`, newest 20 per file |
+| `cc-list-remote-v2` | `listRemote(h,p)` | `ssh <host> ls -1p -- <dir>`, filtered to documents |
+| `cc-read-remote-v2` | `readRemote(h,p,f)` | `ssh <host> cat -- <dir>/<file>` |
+
+**Containment rules**, all enforced in the main process, never in the renderer:
+
+- Local paths must resolve inside `~/Documents/AI Projects` (`full === ROOT || full.startsWith(ROOT + sep)`).
+- Filenames must have no `/` or `\`, no `..`, no leading `.`, and a `.md`/`.txt` extension.
+- SSH host names must match `[A-Za-z0-9._-]{1,64}`; the remote path is single-quoted. `execFile`
+  is used, so no local shell is involved either. BatchMode means it never prompts.
+- Remote is **read-only** on purpose - the panel disables its editor for remote folders rather than
+  offering one that silently can't save.
+
+The checks are written without regexes or backslash escapes where the input is a filename: the
+source string passes through an unquoted bash heredoc and then a Python literal before it is ever
+JS, and each layer has its own opinion about backslashes.
+
+Verified end to end (2026-08-21) against the patched bundle with a stubbed `ipcMain`: listing,
+reading, write + backup round-trip, and every guard above - `/etc`, `../../../etc/passwd.md`,
+`secrets.env`, `.hidden.md`, a `.sh` file, and `bad;rm -rf /` as a host name all rejected.

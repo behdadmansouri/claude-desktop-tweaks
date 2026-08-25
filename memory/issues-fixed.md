@@ -299,7 +299,7 @@ scroll offset.
 
 **Root cause:** `splitEmoji()` only matched a **leading** emoji
 (`/^([^\p{L}\p{N}]+)([\p{L}\p{N}].*)$/su`), but this workspace's folder-naming convention puts it
-at the **end** ("Claude Desktop 🤖", "Product Hunt 🛒" - see `memory/reference_folder_naming.md`
+at the **end** ("Claude Desktop 🤖", "Product Hunt 🛒" - see `memory/reference/reference_folder_naming.md`
 in the root workspace). So every folder came back `{emoji:''}`, `buildColumn`'s
 `folders.some(f => …emoji)` guard was always false, `compact` never turned on, and the toggle
 flipped a flag nothing read. Issue #19 fixed the *layout* of emoji-only mode without noticing the
@@ -429,3 +429,421 @@ clear the bar rather than sitting under the window controls.
 
 **Lesson:** "it renders but won't take clicks, only near the top of the window" is a drag region,
 every time. Nothing about stacking order will fix it.
+
+---
+
+## 30. The project panel sat on top of the app's own dialogs (2026-08-21)
+
+**Symptom:** "I can't manually select a project when opening the menu that Claude has itself, or
+when I bring up the settings - the project picker is on top of the settings."
+
+**Root cause:** the panel is `position:fixed` at `z-index:2147482000`. That number is not one you
+can lose to, which is the point when it has to sit over the composer - and exactly wrong when the
+app opens a modal. There is no single z-index that is correct for both cases.
+
+**Fix:** stop treating it as a stacking question. `applyPanelVisibility()` (called from the scan
+loop) hides the panel whenever a real app overlay is open - matched by role/attribute
+(`[role=dialog]`, `[role=menu]`, `[role=listbox]`, the Radix popper/select/dropdown wrappers) with a
+60x24 size floor, and with tooltips explicitly excluded so the panel doesn't blink out every time
+the pointer grazes a toolbar icon. `visibility:hidden`, not `display:none`, so the next
+`clampPanel()` doesn't measure a collapsed box.
+
+**Lesson:** an overlay that must outrank the app's content will also outrank the app's modals. The
+answer is to yield, not to pick a bigger number.
+
+---
+
+## 31. Picking a project opened a different project (2026-08-21)
+
+**Symptom:** "when I select the Pebble project, it opens Time Management for me."
+
+**Root cause:** `waitNewMenu()`'s scraper matched on `_ITEM_SEL`, which lists both `li` and
+`button`. A menu row built as `<li><button>Pebble</button></li>` therefore produced **two** entries,
+and the old filter (drop anything containing a `[role=menuitem]`) missed it because a plain button
+carries no role. So an N-row menu could scrape as a 2N-item list - and the keyboard fallback
+navigated by **index**: it counted `indexOf(target)` phantom rows, pressed ArrowDown that many
+times, and committed whatever happened to be highlighted when it stopped. Nothing about the name
+matching was wrong.
+
+**Fix:** two layers.
+1. `grab()` now keeps only innermost matches (`raw.filter(el => !raw.some(o => o !== el && el.contains(o)))`).
+2. `keyboardPick()` replaces blind arrow-counting: it walks down one row at a time and checks what
+   is *actually* highlighted after each step, pressing Enter only when that is the target. If it
+   never lands on it, it presses nothing. The old "Enter didn't commit, so click whatever is
+   highlighted" fallback is gone - it clicks the target or nothing.
+
+**Lesson:** navigating a menu by index is a guess about someone else's DOM. Verify the highlight
+before committing; "nothing happened" is a recoverable outcome, "opened the wrong project" is not.
+
+---
+
+## 32. Switching to a remote host did nothing (2026-08-21)
+
+**Symptom:** "it opens the remote selector, the host selector, and it can't select the other host."
+
+**Root cause:** after switching connection, the code looked for a dialog and only handled
+`opts.length === 1` - literally `else return`. With more than one host configured it opened the
+picker and abandoned it. Separately, the connection menu was matched with a first-hit substring
+test, so an action row like "Manage <host>…" could win over the host itself.
+
+**Fix:** the host dialog is now scored with the same `bestMatch()` used for folders, over
+innermost-deduped options with action labels (`cancel/close/back/add/new/manage/help`) filtered out,
+followed by a confirm button if the build wants one. The connection menu excludes rows starting
+with add/set up/manage/configure/connect to/new before scoring. Both log a `[cc-ws-debug]` line.
+
+Also: the remote folder browser now **walks the path** one segment at a time - find the earliest
+remaining segment listed here, click it, re-read the listing, repeat - instead of only looking for
+the final basename in whatever directory the dialog happened to open. Exact text matches only, no
+blind "Go" and no Enter; a segment that isn't listed stops the walk and leaves the dialog open.
+
+---
+
+## 33. sampleWS() was called but did not exist (2026-08-21)
+
+**Symptom:** none visible, which is the interesting part. Found while auditing, not from a report.
+
+**Root cause:** the 2026-07-12 scope trim deleted `sampleWS()` but left its call site in
+`installPanel()` (`wsRow.addEventListener('click', () => sampleWS(wsRow), true)`). Every click on
+the workspace row threw a ReferenceError out of a capture-phase listener - harmless to the app, but
+`sampleWS` was the **only writer of `cc-ws-v4`**, and `cc-ws-v4` is the entire source of the panel's
+Remote column. So no remote folder had been recorded since July; the Remote column has been showing
+a frozen snapshot from before the trim.
+
+**Fix:** reinstated, deferred 900ms (the click is captured on the way *down*, when the row still
+shows the previous selection), with placeholder labels ("Open folder…", "Select…") rejected.
+
+**Lesson:** when trimming dead code, grep for the callers too. A missing function inside an event
+listener fails silently and takes a whole data path with it.
+
+---
+
+## 34. Context and the 5-hour limit showed the same number (2026-08-21)
+
+**Symptom:** "on the new session page, the usage tracker shows the same number for the 5-hour limit
+as the context, and that is incorrect."
+
+**Root cause:** `cuScanContext()` sliced the popover text from the word "context" **to the end** and
+took the first percentage anywhere after it. On a page whose popover has a "Context window" heading
+with no number of its own - a fresh session, nothing sent yet - the first `%` it found belonged to
+the next row, i.e. the 5-hour limit. The reading was also never expired, so a number scraped in one
+conversation was presented as the next one's.
+
+**Fix:** three parts.
+1. `cuCtxFromText()` bounds the segment to 160 chars and cuts it at the next bucket label
+   (`5-hour|weekly|opus|sonnet|resets|extra usage|…`), so a context row with no number reads as
+   *no number*.
+2. `CU_CTX_TTL` (8 min) plus `cuRouteWatch()`, which wraps `history.pushState/replaceState` and
+   clears the reading the moment the SPA navigates.
+3. When context is unknown the chip **drops the segment entirely** rather than rendering `--`. The
+   plan buckets keep their placeholder, because for those "--" genuinely means "the fetch is
+   failing" and is worth seeing.
+
+**Lesson:** an unlabelled number next to other numbers gets read as belonging to whichever label is
+nearest. Showing nothing is a real answer.
+
+---
+
+## 35. The floating usage chip swallowed clicks meant for the app (2026-08-21)
+
+**Symptom:** "the usage widget hovers exactly on top of a session on my home tab, and I cannot
+archive it."
+
+**Root cause:** `cuPlace()` has two modes - inlined next to the app's own usage control in the
+composer footer, or, when that control isn't on the page (the home tab, sometimes the code tab), a
+fixed corner overlay on `<body>`. In that fallback the wrapper was `pointer-events:none` but
+`.cc-u-chip` was `pointer-events:auto` unconditionally, so the chip's own ~120x20px rectangle
+intercepted hover and clicks for whatever was painted underneath - on the home tab, a session row
+and its archive control.
+
+**Fix:** floating mode is click-through by default (`#cc-usage[data-float="1"] .cc-u-chip
+{pointer-events:none}`). `cuArmWatch()` adds `.cc-armed` - which restores `pointer-events:auto` and
+shows the card - only after the pointer has rested inside the chip for 200ms; leaving disarms it at
+once. The rect is cached for a second so the document-level `mousemove` isn't forcing layout
+thousands of times a minute. Attached mode is unchanged.
+
+**Lesson:** "sometimes it's there, sometimes it isn't" on an overlay usually means it has two
+placement modes and you're only thinking about one of them.
+
+---
+
+## 36. The panel-hiding fix was the wrong fix (2026-08-21)
+
+**Symptom (feedback):** "the project picker shouldn't disappear, it should just go under things."
+
+**Root cause:** #30 solved the right problem the wrong way. Hiding on overlay-open works, but a
+panel that vanishes is harder to reason about than one that is simply behind something - and it
+needed a detector that had to keep guessing which roles count as "modal".
+
+**Fix:** the detector is gone. `z-index` dropped from `2147482000` to **30**. claude.ai's overlays
+are Radix portals in the z-40/z-50 band and ordinary page content is z-auto, so a value between the
+two paints over the composer and under every dialog, including ones we have never seen - no
+enumeration required.
+
+**Lesson:** reach for the stacking context before reaching for a detector. The detector was ~35
+lines and a maintenance liability; the correct answer was one number.
+
+---
+
+## 37. The panel covered the sidebar on a narrow window (2026-08-21)
+
+**Symptom:** "when my window is small, the project selector gets on top of the sessions too."
+
+**Root cause:** `clampPanel()` positioned the panel at the workspace row's left edge, then, if the
+target width overflowed the viewport, slid it LEFT (`left = vw - WS_MARGIN - w`) - straight across
+the session list. On a narrow window that branch is guaranteed.
+
+**Fix:** the row's left edge is now a hard floor (`minLeft`), and the width is derived from what is
+left over (`vw - WS_MARGIN - left`). It shrinks instead of sliding. The workspace row lives in the
+main content column, so its left edge is a reliable stand-in for where the sidebar ends without
+having to identify the sidebar at all.
+
+The floating usage chip had the same problem for the same reason and gets the same treatment, except
+that it genuinely has to find the sidebar (it isn't anchored to anything in the content column).
+`cuSidebarRight()` identifies it geometrically - tall, pinned to the left edge, under half the window
+wide - never by class name, because these class names are generated.
+
+---
+
+## 38. Local project switching broke completely (2026-08-21, same day, self-inflicted)
+
+**Symptom:** "it still struggles with changing projects. Even local ones."
+
+**Root cause:** two bugs, one old and one introduced by #31 that morning.
+
+1. *Introduced.* #31's "keep only innermost matches" was too broad. The connection menu's "Local"
+   row contains a nested control, so the labelled row was dropped in favour of an unlabelled child
+   and the menu scraped as `["", "Cloud", "Remote Control", "SSH"]`. No match, and `clickWorkspace`
+   then hit `if (!connTarget) { document.body.click(); return; }` - returning before the folder step.
+   Fixing "opens the wrong project" had produced "opens no project".
+2. *Old, and the more interesting one.* `currentConn` was read as
+   `connBtn.querySelector('span,div')?.textContent` and has returned `""` on every build for as long
+   as the log goes back - every `[cc-ws-debug]` line reads `"from":""`. An empty string never equals
+   the wanted connection, so the connection menu was opened and driven **on every single click**,
+   including the overwhelmingly common case of already being on Local. Every bit of fragility in
+   that path was being paid for when there was nothing to switch.
+
+**Fix:** dedupe only when the descendant's text is *identical* to the ancestor's (that is the actual
+`<li><button>` duplication and nothing else); read the whole button with `aria-label` first and
+compare by normalised containment, since the label reads "Local, environment settings, right arrow";
+and treat a missing connection target as "stay on the current one and carry on to the folder"
+rather than as fatal.
+
+**Lesson:** `"from":""` was sitting in the log for days. A debug field that is always empty is a
+finding, not noise.
+
+---
+
+## 39. SSH hosts are in a submenu, and named differently than ssh knows them (2026-08-21)
+
+**Symptom:** "I'm not seeing projects from my other servers", and remote switching never worked.
+
+**Root causes**, three of them:
+
+1. The connection menu lists *categories* - Local / Cloud / Remote Control / SSH - and the hosts are
+   in a submenu under SSH. Nothing ever opened it, so a host name was never among the scraped items
+   and no amount of match-tuning could have helped.
+2. The Remote column was built solely from `cc-ws-v4`, which only knows what our code observed, and
+   which recorded nothing at all between July and #33. Meanwhile the app keeps the same information
+   in the renderer's own localStorage under `desktop-recent-workspaces` - same origin, no IPC needed -
+   and the configured hosts in `~/.config/Claude/ssh_configs.json`.
+3. The panel knows a connection by its **display name**; ssh needs the **target**. They differ:
+   `Myserver`→`myserver`, `MyHostinger`→`root@…` (+ an identity file), `Dad`→`Dr`. The
+   first ssh implementation validated the display name as if it were a hostname, and rejected `@`.
+
+**Fix:** open the SSH category when the host isn't at the top level; merge three sources into the
+Remote column (ours, the app's, and every configured host, so an unused server still appears);
+resolve display name → target + identity file in the main process from the app's own config file.
+Host headings are also buttons now - they open the ssh file browser at `/`, so a server that has
+never been used here is still reachable.
+
+Verified against all three real hosts: `cc-ssh-configs` resolves them, `ls` and `cat` succeed
+(including a path containing a space), and `"/tmp'; id #"` as a path comes back as a literal
+filename rather than a second command.
+
+---
+
+## 40. ActivityWatch only ever saw the window titled "Claude" (2026-08-21)
+
+**Symptom:** "the Claude ActivityWatch watcher isn't giving the window title to ActivityWatch."
+
+**Root cause:** not the watcher, and not `titlewatch.js`. The KWin watcher is running and logging
+Claude regularly - every event in the bucket read `{"app":"Claude","title":"Claude"}`. `titlewatch.js`
+was correctly setting `document.title`; Electron just wasn't mirroring it onto the BrowserWindow (an
+app-side `page-title-updated` suppression or an explicit `setTitle`).
+
+**Fix:** a `cc-set-title` IPC. The renderer asks, the main process calls `win.setTitle()` directly,
+which nothing overrides. `titlewatch.js` calls it alongside the existing `document.title` write.
+
+**Lesson:** "the page title is set" and "the window title is set" are two different facts. Check the
+consumer's data (the bucket) before touching the producer.
+
+---
+
+## 41. Menu rows stopped carrying their names, and everything keyed on text went blind (2026-08-25)
+
+**Symptom:** picking a project was slow, and the SSH host stage could not be got past at all.
+
+**Evidence, not guesswork.** Every `[cc-ws-debug]` line from 2026-08-22 onward is identical:
+
+```json
+{"stage":"conn","conn":"Local","from":"","found":false,
+ "items":["","Cloud","Remote Control","SSH"]}
+```
+
+On 2026-08-21 that same first row read `"Local, environment settings, right arrow"`. The build
+changed where a menu row keeps its name; `textContent` now returns `""` for it.
+
+**Two consequences, one cause:**
+
+- `from:""` means the current connection is unknown, so `alreadyOn` can never be true. The
+  connection menu was therefore opened and driven on **every** click, Local to Local included -
+  roughly 1.5-2s of choreography to switch to where we already were. That is the slowness, and it
+  was never a performance problem; it was a matching problem.
+- The Local row scores 0 against every candidate, so `found:false`, so no connection can be
+  selected and the SSH submenu below it is unreachable.
+
+**Fix:** `labelsOf(el)` collects every string a row might carry its name in - `aria-label`,
+`data-value`, `value`, `title`, `data-path`, dereferenced `aria-labelledby`, nested
+`[aria-label]/[title]/img[alt]`, and textContent - and `scoreEl()` takes the best score across all
+of them. Adding candidates can only turn a miss into a hit, never a hit into a *different* hit,
+because the scores are compared rather than concatenated. Every `.textContent`-based filter on that
+path (`CONN_ACTION_RE`, `HOST_ACTION_RE`, the SSH-category find, `listed()`) moved to the same
+helper.
+
+The debug beacon now also logs `rowShape()` - the full attribute set of the first two rows - so if
+the name ever moves somewhere `labelsOf` does not look, the next log line says where instead of
+costing another round of guessing.
+
+**Lesson:** this is the third bug (#31, #32, this) caused by reading a name off `textContent`. The
+DOM is someone else's API and it is not versioned. Read every label source, score them, and log the
+shape when nothing matches.
+
+---
+
+## 42. The keyboard walk would commit on ANY row (2026-08-25)
+
+Found while fixing #41, in the same blind spot. `sameItem(hot, target)` ended with:
+
+```js
+(hot.textContent || '').trim() === (target.textContent || '').trim()
+```
+
+With the current build that compares `""` to `""` for every row in the menu - so `keyboardPick`
+believed it had arrived the instant it highlighted *anything*, and pressed Enter there. Identity
+and containment are checked first, which is why this did not fire constantly, but whenever the walk
+was mistimed it committed to the wrong row.
+
+This is the more dangerous half of #41: the matcher merely failed to find, this one *acted*. Fixed
+by comparing `bestLabel()` and requiring both sides to be non-empty.
+
+**Lesson:** an equality test between two values that can both be empty is a test that passes by
+default. Guard the empty case explicitly.
+
+---
+
+## 43. Sleep was blocked for the whole session, not while working (2026-08-25)
+
+**Symptom:** the machine never slept overnight; KDE showed "Claude Desktop is blocking sleep
+(Electron)" in the morning with nothing running.
+
+**Root cause:** not a leaked assertion, and nothing to do with whether an agent was running. In the
+main chunk the blocker has exactly one claimer:
+
+```js
+const s7e="keepAwakeEnabled";
+function a7e(){kt("keepAwakeEnabled")===!0?GTn(s7e):ZTn(s7e)}
+function XTn(){ks.on("keepAwakeEnabled",a7e),a7e()}
+```
+
+It claims `powerSaveBlocker('prevent-app-suspension')` once at startup and holds it until quit.
+`main.log` had a single `[keep-awake] started (id=0, first claim=keepAwakeEnabled)` from three days
+earlier and no matching `stopped`.
+
+The pref **defaults to false**. It is flipped on for you - the build carries a
+`wakeSchedulerCourtesyFlippedKeepAwake` flag - which is why turning it off by hand does not stay
+off, and why it was on without ever having been set.
+
+**Why the app's own per-turn assertions do not help on Linux:** `releaseTurnBlocks` releases
+`heldPSSAssertions` through `u7e()`, which is `Ft.wakeScheduler` - the macOS Swift bridge, null
+here. The remaining signal, `chainActive`, only covers the cloud-agent bridge, not local sessions.
+
+**Fix:** `update-ui.sh` rewrites `a7e` so the claim is gated on `globalThis.__ccWorkActive()`, and
+patches the installer to re-evaluate on a 60s interval rather than only on a settings change. An
+appended IIFE defines the predicate: any `local_*.json` in the profile's `claude-code-sessions`
+touched within the idle window (default 30 min, `CC_KEEPAWAKE_IDLE_MIN` to change) means working.
+Located by the pref-name string, since every identifier in it is regenerated per release.
+
+Two deliberate choices:
+
+- **mtime, not `lastActivityAt`.** That field only moves at turn boundaries - a live session
+  measured 16 minutes stale mid-turn - and a window that short would suspend the machine in the
+  middle of a long run. mtime is a superset of real activity, and erring toward "busy" is the
+  direction that cannot lose work.
+- **Not keyed on window focus.** An app left focused overnight is exactly the reported situation.
+
+Fails safe: if the predicate is missing or throws, `_busy` stays true and the old
+block-forever behaviour returns.
+
+**Still open:** the second inhibitor in the same KDE panel - "blocking screen locking (Capturing)"
+- is a separate Chromium capture inhibitor and its owner has not been traced.
+
+---
+
+## 44. The usage chip parked on top of the session list in the Code tab (2026-08-25)
+
+`cuSidebarRight()` pushed a left-corner chip past the sidebar, but only searched
+`nav, aside, [class*=sidebar], [data-testid*=sidebar]`. The Code tab's session list is none of
+those, so it returned 0 there and the chip sat in the bare left corner - on a project row. The
+comment above it already described this exact failure happening in Cowork (#35 era); the selector
+list was simply not the fix, because the thing being looked for has no stable tag or class.
+
+**Fix:** scan by geometry alone - any element pinned to the left edge, at least half the viewport
+tall, narrower than half the viewport wide - descending only through boxes too wide to be a pane
+themselves, and depth-capped at 12. Nothing about it depends on what the pane is called.
+
+**Lesson:** when a selector list keeps needing another entry, the selector list is the bug.
+
+---
+
+## 45. Per-project open-TODO counts (2026-08-25, feature)
+
+Not a bug. Each tile now shows how many unticked boxes its `TODO.md` has: a corner dot in emoji
+mode, the number itself in short/full mode, three stepped intensities (1-3 / 4-9 / 10+), and the
+exact "N open of M" in the tooltip.
+
+No new IPC - it counts the same TODO.md text the preview pane already receives (baked at build
+time, refreshed live over `cc-ai-data-v2`). The regex is deliberately strict about markdown list
+syntax; anything looser starts counting checkboxes quoted inside code fences, and an inflated
+number is worse than no number because you stop trusting it.
+
+---
+
+## Maintenance note: `custom-ui/workspace.js` contained a literal NUL byte
+
+Until 2026-08-25 the file held `normConn(currentConn || '\x00')` - a sentinel meaning "match
+nothing". A NUL makes the file *binary* as far as grep is concerned, so `grep -n foo workspace.js`
+printed **nothing at all** for a file full of matches, silently, with exit status 0. That cost real
+time before it was noticed. The sentinel is gone (the empty case is now guarded explicitly) and the
+byte is stripped. Do not reintroduce one; `file custom-ui/*.js` should say "JavaScript source" for
+every module.
+
+---
+
+## Maintenance note: `update-ui.sh`'s heredoc is UNQUOTED
+
+Twice in one session a *comment* inside the `python3 << PYEOF` block broke the build:
+
+- A backslash escape (`[\r\n]`) was eaten before python saw it, producing an invalid JS regex
+  literal. Caught by the script's own `node --check`.
+- Backticks around a command name in a prose comment - "``ls -1pA`` marks directories" - were
+  **executed by bash**, splicing a directory listing into the middle of a python string literal.
+  This one is nastier: the error pointed at the opening line of a 174-line string concatenation and
+  said "perhaps you forgot a comma".
+
+Inside that heredoc, comments are code. No backticks, no `$(`, and no backslash escapes - use
+`String.fromCharCode()` and `split()/join()` instead. There is now a scan for this; run it before
+blaming python:
+
+```bash
+node -e 'const fs=require("fs"),BT=String.fromCharCode(96);const L=fs.readFileSync("scripts/update-ui.sh","utf8").split("\n");const s=L.findIndex(l=>l.includes("python3 << PYEOF")),e=L.findIndex((l,i)=>i>s&&l.trim()==="PYEOF");L.forEach((l,i)=>{if(i>s&&i<e&&(l.includes(BT)||/\$\(/.test(l)))console.log(i+1+": "+l)})'
+```

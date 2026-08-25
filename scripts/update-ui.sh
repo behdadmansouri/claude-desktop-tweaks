@@ -43,13 +43,61 @@ echo "→ Building custom-ui.js from modules..."
 echo "  $(wc -l < "$PROJECT_DIR/custom-ui.js") lines built"
 
 CUSTOM="$PROJECT_DIR/custom-ui.js"
+
+# Which install to patch. Everything downstream locates its targets by content
+# signature rather than by version or filename, so the same patch applies to
+# either build - the only thing that differs is the prefix.
+#
+#   (default)     ~/.local/lib/claude-desktop-patched   -- the daily driver
+#   --official    ~/.local/lib/claude-desktop-official  -- Anthropic's own build
+#   --prefix DIR  anything else
+#
+# The official build is REVERTED by scripts/install-official.sh on every update,
+# because that script replaces the whole prefix. Re-run this with --official
+# afterwards; there is nothing here that persists across a reinstall.
+TARGET="patched"
 PATCHED_ROOT="$HOME/.local/lib/claude-desktop-patched"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --official)
+      TARGET="official"
+      PATCHED_ROOT="$HOME/.local/lib/claude-desktop-official"
+      shift ;;
+    --prefix)
+      TARGET="custom"
+      PATCHED_ROOT="${2:?--prefix needs a directory}"
+      shift 2 ;;
+    -h|--help)
+      echo "usage: $0 [--official | --prefix DIR]"
+      exit 0 ;;
+    *)
+      echo "ERROR: unknown argument: $1" >&2
+      echo "usage: $0 [--official | --prefix DIR]" >&2
+      exit 1 ;;
+  esac
+done
+
 ASAR="$PATCHED_ROOT/usr/lib/claude-desktop/resources/app.asar"
-EXTRACT="/tmp/claude-ui-work"
+# Separate work directories, so patching one build can never pick up the other's
+# extracted tree.
+EXTRACT="/tmp/claude-ui-work-$TARGET"
+# The two builds run on separate Electron profiles on purpose (both have appName
+# "Claude", and sharing one profile between two processes risks LevelDB
+# corruption). Anything this script writes into a profile has to follow.
+if [[ "$TARGET" == "official" ]]; then
+  PROFILE_DIR="$HOME/.config/ClaudeOfficial"
+else
+  PROFILE_DIR="$HOME/.config/Claude"
+fi
+
+echo "  Target: $TARGET ($PATCHED_ROOT)"
 
 if [[ ! -f "$ASAR" ]]; then
   echo "ERROR: asar not found at $ASAR" >&2
   echo "  (expected new v3.0.0-rebase layout - usr/lib/claude-desktop/resources/app.asar)" >&2
+  if [[ "$TARGET" == "official" ]]; then
+    echo "  Install it first: scripts/install-official.sh" >&2
+  fi
   exit 1
 fi
 
@@ -83,7 +131,7 @@ except Exception:
 
 # ── Write cc-folders.json so the preload can re-read it at runtime
 #    (no asar repack needed after a rename - just run refresh-folders.sh)
-folders_json = os.path.expanduser("~/.config/Claude/cc-folders.json")
+folders_json = os.path.join("$PROFILE_DIR", "cc-folders.json")
 with open(folders_json, "w") as f:
     json.dump(ai_list, f)
 print(f"  Wrote {len(ai_list)} folders to cc-folders.json")
@@ -138,7 +186,16 @@ expose = (
     "try{_cb.exposeInMainWorld('ccBridge',{"
     "armFolder:function(p){return _ipc.invoke('cc-arm-folder',p);},"
     "openFolder:function(p){return _ipc.invoke('cc-open-folder',p);},"
-    "writeTodo:function(p,t){return _ipc.invoke('cc-write-todo-v2',p,t);}"
+    "writeTodo:function(p,t){return _ipc.invoke('cc-write-todo-v2',p,t);},"
+    "listDocs:function(p){return _ipc.invoke('cc-list-docs-v2',p);},"
+    "readDoc:function(p,f){return _ipc.invoke('cc-read-doc-v2',p,f);},"
+    "writeDoc:function(p,f,t){return _ipc.invoke('cc-write-doc-v2',p,f,t);},"
+    "listRemote:function(h,p){return _ipc.invoke('cc-list-remote-v2',h,p);},"
+    "readRemote:function(h,p,f){return _ipc.invoke('cc-read-remote-v2',h,p,f);},"
+    "sshConfigs:function(){return _ipc.invoke('cc-ssh-configs');},"
+    "listTree:function(p,r){return _ipc.invoke('cc-list-tree-v2',p,r);},"
+    "listTreeRemote:function(h,p){return _ipc.invoke('cc-list-tree-remote-v2',h,p);},"
+    "setTitle:function(t){return _ipc.invoke('cc-set-title',t);}"
     "});}catch(_){}"
 )
 
@@ -300,7 +357,7 @@ if True:
         BLOCK_A + ";(function(){try{var _e=require('electron'),fs=require('fs'),"
         "p=require('path'),os=require('os');"
         "var ROOT=p.resolve(p.join(os.homedir(),'Documents','AI Projects'));"
-        "var BAK=p.join(os.homedir(),'.config','Claude','todo-backups');"
+        "var BAK=p.join(_e.app.getPath('userData'),'todo-backups');"
         "function snap(dir,dest){try{"
         "if(!fs.existsSync(dest))return;"
         "var prev=fs.readFileSync(dest,'utf8');"
@@ -328,6 +385,217 @@ if True:
     ix_changed = True
     print("  Wrote cc-write-todo-v2 ipcMain handler (with backups) to main bundle")
 
+# ── Read/list/write ANY markdown file in a project folder, not just TODO.md.
+#    The preview pane's file picker needs three things the TODO-only channel
+#    couldn't do: enumerate a folder's documents, read one of them, and write one
+#    back. Same containment rule as cc-write-todo-v2 - the directory must resolve
+#    inside ~/Documents/AI Projects - plus a filename whitelist: no separators,
+#    no "..", and a .md/.txt extension. Note the checks are written WITHOUT
+#    regexes or backslash escapes on purpose: this string passes through an
+#    unquoted bash heredoc and then a python literal before it is ever JS, and
+#    each layer has its own opinion about backslashes.
+BLOCK_C, BLOCK_D = "/*cc-block:docs*/", "/*cc-block:docs-end*/"
+if BLOCK_C in ix:
+    ix = ix[:ix.index(BLOCK_C)] + ix[ix.index(BLOCK_D) + len(BLOCK_D):]
+    print("  Removed previous cc-docs block for replacement")
+docs = (
+    BLOCK_C + ";(function(){try{var _e=require('electron'),fs=require('fs'),"
+    "p=require('path'),os=require('os'),cp=require('child_process');"
+    "var BS=String.fromCharCode(92);"
+    "var ROOT=p.resolve(p.join(os.homedir(),'Documents','AI Projects'));"
+    "var BAK=p.join(_e.app.getPath('userData'),'todo-backups');"
+    # A document name we are willing to touch.
+    "function okName(f){if(typeof f!=='string')return false;"
+    "if(!f.length||f.length>120)return false;"
+    "if(f.split('/').length>1||f.split(BS).length>1)return false;"
+    "if(f.indexOf('..')>=0||f.charAt(0)==='.')return false;"
+    "var lo=f.toLowerCase();return lo.slice(-3)==='.md'||lo.slice(-4)==='.txt';}"
+    # A directory inside the projects root.
+    "function okDir(d){if(typeof d!=='string'||!d)return null;"
+    "var full=p.resolve(d);"
+    "if(full!==ROOT&&full.indexOf(ROOT+p.sep)!==0)return null;"
+    "try{if(!fs.statSync(full).isDirectory())return null;}catch(_){return null;}"
+    "return full;}"
+    # TODO.md always sorts first; it is what the pane opens with.
+    "function rank(a,b){if(a==='TODO.md')return -1;if(b==='TODO.md')return 1;"
+    "return a.toLowerCase()<b.toLowerCase()?-1:1;}"
+    "_e.ipcMain.handle('cc-list-docs-v2',function(ev,dir){try{"
+    "var full=okDir(dir);if(!full)return{ok:false,error:'outside AI Projects'};"
+    "var files=fs.readdirSync(full,{withFileTypes:true})"
+    ".filter(function(e){return e.isFile()&&okName(e.name);})"
+    ".map(function(e){return e.name;}).sort(rank).slice(0,40);"
+    "return{ok:true,files:files};}"
+    "catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+    # ── Browsing, not just listing. The app's own file panel (ctrl+shift+F) is
+    #    only available once a session has started, so on the new-session page
+    #    there is no way to look at a project's files at all. This is the panel's
+    #    own answer: directories and files for any subpath of a project, with the
+    #    resolved path re-checked against ROOT after joining, so "../.." in the
+    #    relative part cannot walk out.
+    "function okRel(r){if(r==null||r==='')return true;"
+    "if(typeof r!=='string'||r.length>400)return false;"
+    "return r.split(BS).length===1;}"
+    "_e.ipcMain.handle('cc-list-tree-v2',function(ev,dir,rel){try{"
+    "var base=okDir(dir);if(!base)return{ok:false,error:'outside AI Projects'};"
+    "if(!okRel(rel))return{ok:false,error:'bad path'};"
+    "var full=p.resolve(p.join(base,rel||''));"
+    "if(full!==ROOT&&full.indexOf(ROOT+p.sep)!==0)return{ok:false,error:'outside AI Projects'};"
+    "if(!fs.statSync(full).isDirectory())return{ok:false,error:'not a directory'};"
+    "var ents=fs.readdirSync(full,{withFileTypes:true})"
+    ".filter(function(e){return e.name.charAt(0)!=='.';})"
+    ".map(function(e){return{name:e.name,dir:e.isDirectory()};})"
+    ".sort(function(a,b){if(a.dir!==b.dir)return a.dir?-1:1;"
+    "return a.name.toLowerCase()<b.name.toLowerCase()?-1:1;}).slice(0,300);"
+    "return{ok:true,entries:ents};}"
+    "catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+    "_e.ipcMain.handle('cc-read-doc-v2',function(ev,dir,file){try{"
+    "var full=okDir(dir);if(!full)return{ok:false,error:'outside AI Projects'};"
+    "if(!okName(file))return{ok:false,error:'not a document'};"
+    "var t=p.join(full,file);"
+    "if(!fs.statSync(t).isFile())return{ok:false,error:'not a file'};"
+    "return{ok:true,text:fs.readFileSync(t,'utf8').slice(0,200000)};}"
+    "catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+    # Same backup-before-overwrite discipline as the TODO writer, keyed by
+    # project AND filename so editing NOTES.md can't evict TODO.md's history.
+    "function snap(dir,file,dest){try{"
+    "if(!fs.existsSync(dest))return;"
+    "var prev=fs.readFileSync(dest,'utf8');"
+    "var slug=p.basename(dir).replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,80)||'root';"
+    "var d=p.join(BAK,slug);fs.mkdirSync(d,{recursive:true});"
+    "var pre=file+'.';"
+    "function mine(f){return f.indexOf(pre)===0;}"
+    "var last=fs.readdirSync(d).filter(mine).sort();"
+    "if(last.length&&fs.readFileSync(p.join(d,last[last.length-1]),'utf8')===prev)return;"
+    "fs.writeFileSync(p.join(d,pre+new Date().toISOString().replace(/[:.]/g,'-')+'.md'),prev,'utf8');"
+    "var all=fs.readdirSync(d).filter(mine).sort();"
+    "while(all.length>20){try{fs.unlinkSync(p.join(d,all.shift()));}catch(_){}}"
+    "}catch(_){}}"
+    "_e.ipcMain.handle('cc-write-doc-v2',function(ev,dir,file,text){try{"
+    "if(typeof text!=='string')return{ok:false,error:'bad args'};"
+    "if(text.length>200000)return{ok:false,error:'too large'};"
+    "var full=okDir(dir);if(!full)return{ok:false,error:'outside AI Projects'};"
+    "if(!okName(file))return{ok:false,error:'not a document'};"
+    "var dest=p.join(full,file),tmp=dest+'.cc-tmp';"
+    "snap(full,file,dest);"
+    "fs.writeFileSync(tmp,text,'utf8');fs.renameSync(tmp,dest);"
+    "return{ok:true};}catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+    # ── Remote (SSH) reads. The panel's Remote column lists folders on hosts
+    #    configured as SSH connections; nothing local can see them, which is why
+    #    those entries always previewed as "No TODO.md". This shells out to ssh
+    #    in BatchMode (never prompts, fails fast if the host or key isn't set up)
+    #    and is strictly READ-only: two commands, cat and ls, both on a path the
+    #    renderer already knew. The host must look like an ssh alias and the path
+    #    is single-quoted, so neither can smuggle in a second command.
+    "var chr39=String.fromCharCode(39),chr10=String.fromCharCode(10);"
+    "function q(s){return chr39+String(s).split(chr39).join(chr39+BS+chr39+chr39)+chr39;}"
+    # An ssh target, which may be user@host. '@' is allowed; anything that could
+    # start a second command or a new argument is not.
+    "function okHost(h){if(typeof h!=='string'||!h.length||h.length>96)return false;"
+    "for(var i=0;i<h.length;i++){var c=h.charAt(i);"
+    "if(!(c>='a'&&c<='z')&&!(c>='A'&&c<='Z')&&!(c>='0'&&c<='9')"
+    "&&c!=='.'&&c!=='-'&&c!=='_'&&c!=='@')return false;}"
+    "return true;}"
+    # The panel knows a connection by its DISPLAY name ("Myserver", "Dad"); ssh
+    # needs the real target ("myserver", "Dr") and sometimes an identity file.
+    # The app already stores that mapping in ssh_configs.json, so read it rather
+    # than asking the user to repeat it. A name that isn't in the file is tried
+    # as-is, which keeps hand-typed hosts working.
+    "var SSHCFG=p.join(_e.app.getPath('userData'),'ssh_configs.json');"
+    "function resolveHost(name){var out={target:name,id:null};try{"
+    "var j=JSON.parse(fs.readFileSync(SSHCFG,'utf8'));"
+    "var want=String(name).toLowerCase();"
+    "var hit=(j.configs||[]).filter(function(c){"
+    "return c&&String(c.name||'').toLowerCase()===want;})[0];"
+    "if(hit){if(hit.sshHost)out.target=hit.sshHost;"
+    "if(hit.sshIdentityFile)out.id=String(hit.sshIdentityFile)"
+    ".replace(/^~/,os.homedir());}}catch(_){}return out;}"
+    "_e.ipcMain.handle('cc-ssh-configs',function(){try{"
+    "var j=JSON.parse(fs.readFileSync(SSHCFG,'utf8'));"
+    "return{ok:true,hosts:(j.configs||[]).map(function(c){"
+    "return{name:String(c.name||''),sshHost:String(c.sshHost||'')};})"
+    ".filter(function(h){return h.name;})};}"
+    "catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
+    "function ssh(name,cmd){return new Promise(function(res){"
+    "var r=resolveHost(name);"
+    "if(!okHost(r.target))return res({ok:false,error:'not an ssh host name'});"
+    "var args=['-o','BatchMode=yes','-o','ConnectTimeout=6','-n'];"
+    "if(r.id)args=args.concat(['-i',r.id]);"
+    "args=args.concat([r.target,cmd]);"
+    "cp.execFile('ssh',args,"
+    "{timeout:9000,maxBuffer:1048576},function(err,out,serr){"
+    "if(err)return res({ok:false,error:(String(serr||err.message||err).split(chr10)[0]||'ssh failed').slice(0,160)});"
+    "res({ok:true,out:String(out)});});});}"
+    # The DISPLAY name is validated loosely here (it can contain spaces); the
+    # resolved ssh target is validated strictly inside ssh().
+    "function okName2(n){return typeof n==='string'&&n.length>0&&n.length<=64;}"
+    "_e.ipcMain.handle('cc-read-remote-v2',function(ev,host,dir,file){"
+    "if(!okName2(host))return Promise.resolve({ok:false,error:'bad host name'});"
+    "if(typeof dir!=='string'||!dir)return Promise.resolve({ok:false,error:'bad path'});"
+    "if(!okName(file))return Promise.resolve({ok:false,error:'not a document'});"
+    "return ssh(host,'cat -- '+q(dir+'/'+file)).then(function(r){"
+    "return r.ok?{ok:true,text:r.out.slice(0,200000)}:r;});});"
+    # Remote equivalent of cc-list-tree-v2. "ls -1pA" marks directories with a
+    # trailing slash, which is the whole reason -p is there.
+    #
+    # (No backticks in these comments, ever. This heredoc is UNQUOTED, so bash
+    # expands its contents before python sees them - a backticked "ls" in a
+    # comment here was executed, and the directory listing was spliced into the
+    # middle of a string literal.)
+    "_e.ipcMain.handle('cc-list-tree-remote-v2',function(ev,host,dir){"
+    "if(!okName2(host))return Promise.resolve({ok:false,error:'bad host name'});"
+    "if(typeof dir!=='string'||!dir)return Promise.resolve({ok:false,error:'bad path'});"
+    "return ssh(host,'ls -1pA -- '+q(dir)).then(function(r){"
+    "if(!r.ok)return r;"
+    "var ents=r.out.split(chr10).map(function(s){return s.replace(/\\s+$/,'');})"
+    ".filter(function(s){return s&&s.charAt(0)!=='.';})"
+    ".map(function(s){var d=s.slice(-1)==='/';"
+    "return{name:d?s.slice(0,-1):s,dir:d};})"
+    ".sort(function(a,b){if(a.dir!==b.dir)return a.dir?-1:1;"
+    "return a.name.toLowerCase()<b.name.toLowerCase()?-1:1;}).slice(0,300);"
+    "return{ok:true,entries:ents};});});"
+    "_e.ipcMain.handle('cc-list-remote-v2',function(ev,host,dir){"
+    "if(!okName2(host))return Promise.resolve({ok:false,error:'bad host name'});"
+    "if(typeof dir!=='string'||!dir)return Promise.resolve({ok:false,error:'bad path'});"
+    "return ssh(host,'ls -1p -- '+q(dir)).then(function(r){"
+    "if(!r.ok)return r;"
+    "var files=r.out.split(chr10).map(function(s){return s.trim();})"
+    ".filter(okName).sort(rank).slice(0,40);"
+    "return{ok:true,files:files};});});"
+    "}catch(_){}})();" + BLOCK_D + "\n"
+)
+ix = ix + docs
+ix_changed = True
+print("  Wrote cc-docs ipcMain handlers (list/read/write + ssh read) to main bundle")
+
+# ── Native window title.
+#    titlewatch.js has been setting document.title for months and the KWin
+#    watcher feeding ActivityWatch still only ever saw "Claude" - confirmed by
+#    reading the bucket: every Claude event is {"app":"Claude","title":"Claude"}.
+#    Electron normally mirrors the page title onto the window, so something in
+#    the app suppresses it (a page-title-updated handler that preventDefaults, or
+#    an explicit setTitle). Rather than find and fight that, go around it: the
+#    renderer asks for the title it wants and the main process sets it on the
+#    BrowserWindow directly, which nothing else overrides.
+if "cc-set-title" not in ix:
+    titler = (
+        ";(function(){try{var _e=require('electron');"
+        "_e.ipcMain.handle('cc-set-title',function(ev,t){try{"
+        "if(typeof t!=='string')return false;"
+        # Newlines stripped without a regex: a backslash escape here would be
+        # eaten by the bash heredoc before python ever saw it (which it was, once
+        # - node --check caught the broken literal).
+        "t=t.split(String.fromCharCode(10)).join(' ')"
+        ".split(String.fromCharCode(13)).join(' ').slice(0,200);"
+        "var w=_e.BrowserWindow.fromWebContents(ev.sender);"
+        "if(w&&!w.isDestroyed())w.setTitle(t||'Claude');"
+        "return true;}catch(_){return false;}});}catch(_){}})();\n"
+    )
+    ix = ix + titler
+    ix_changed = True
+    print("  Appended cc-set-title ipcMain handler to main bundle")
+else:
+    print("  cc-set-title ipcMain handler already present in main bundle")
+
 if "cc-open-folder" not in ix:
     opener = (
         ";(function(){try{var _e=require('electron');"
@@ -341,6 +609,108 @@ if "cc-open-folder" not in ix:
 else:
     print("  cc-open-folder ipcMain handler already present in main bundle")
 
+# -- Make "keep computer awake" mean "while working", not "while running". -----
+#
+#    The app claims powerSaveBlocker('prevent-app-suspension') once, at startup,
+#    the instant the keepAwakeEnabled pref is true - and holds it until quit.
+#    Measured 2026-08-25: main.log had a single
+#      [keep-awake] started (id=0, first claim=keepAwakeEnabled)
+#    from three days earlier and no matching "stopped" since. So an idle laptop
+#    never sleeps, which is the symptom. Note the pref defaults to FALSE and is
+#    flipped on for you - the build carries a wakeSchedulerCourtesyFlippedKeepAwake
+#    flag - so turning it off by hand does not stay off.
+#
+#    The upstream shape is:
+#      const s7e="keepAwakeEnabled";
+#      function a7e(){kt("keepAwakeEnabled")===!0?GTn(s7e):ZTn(s7e)}
+#      function XTn(){ks.on("keepAwakeEnabled",a7e),a7e()}
+#    ...with every one of those names regenerated per release, so this is located
+#    by the one stable thing in it: the pref name. Two edits:
+#      1. the claim becomes conditional on globalThis.__ccWorkActive()
+#      2. the installer re-evaluates on a timer, not only on a settings change
+#    plus an appended IIFE that defines the predicate.
+#
+#    Parsed by string search rather than a regex on purpose: this heredoc is
+#    UNQUOTED, so backslashes are a hazard (see the note at the end of
+#    memory/issues-fixed.md) and a regex for minified identifiers is all
+#    backslashes.
+_probe = '("keepAwakeEnabled")===!0?'
+_k = ix.find(_probe)
+if "__ccWorkActive" in ix:
+    print("  keep-awake governor already present in main bundle")
+elif _k < 0:
+    print("  WARNING: keepAwakeEnabled claim not found - sleep stays blocked for the whole session")
+else:
+    _j = ix.rfind("function ", 0, _k)
+    _open = ix.find("{", _j)
+    _end = ix.find("}", _k)
+    _fn = ix[_j + len("function "):ix.find("(", _j)]
+    _body = ix[_open + 1:_end]
+    # kt("keepAwakeEnabled")===!0 ? GTn(s7e) : ZTn(s7e)
+    _cond, _rest = _body.split("?", 1)
+    _claim, _release = _rest.split(":", 1)
+    if "{" in _body or "}" in _body:
+        raise RuntimeError("keep-awake claim body is not the expected one-liner: " + _body[:120])
+    _new = (
+        "function " + _fn + "(){"
+        "var _on=(" + _cond + ");var _busy=true;"
+        # Fail SAFE: if the predicate is missing or throws, assume work is in
+        # progress and keep blocking. A laptop that sleeps mid-run is a much
+        # worse failure than one that stays awake an hour too long.
+        "try{if(typeof globalThis.__ccWorkActive==='function')_busy=globalThis.__ccWorkActive();}"
+        "catch(_ka){_busy=true;}"
+        "if(_on&&_busy){" + _claim + ";}else{" + _release + ";}}"
+    )
+    ix = ix[:_j] + _new + ix[_end + 1:]
+
+    # The installer only re-ran this on a settings change, so a conditional claim
+    # would latch at startup and never be revisited. Re-evaluate every minute.
+    _p2 = ix.find('.on("keepAwakeEnabled",')
+    if _p2 < 0:
+        raise RuntimeError("keepAwakeEnabled settings-subscribe site not found")
+    _e2 = ix.find("}", _p2)
+    ix = ix[:_e2] + ",setInterval(" + _fn + ",60000)" + ix[_e2:]
+
+    # The predicate. "Working" = some Claude Code session file was touched
+    # recently, read from the profile the app is actually running on.
+    #
+    # Touched, not lastActivityAt: that field only moves at turn boundaries (a
+    # live session was measured 16 minutes stale mid-turn), and a window that
+    # short would suspend the machine in the middle of a long run. File mtime is
+    # a superset of real activity - it also moves for unrelated rewrites - and
+    # erring toward "busy" is the direction that cannot lose work.
+    #
+    # Deliberately NOT keyed on window focus: an app left focused overnight is
+    # exactly the reported situation, and focus would re-create the bug.
+    _gov = (
+        ";(function(){try{var _e=require('electron'),fs=require('fs'),p=require('path');"
+        "var MIN=parseInt(process.env.CC_KEEPAWAKE_IDLE_MIN||'',10);if(!(MIN>0))MIN=30;"
+        "var WIN=MIN*60000,_hit=0,_at=0,_last=null;"
+        "function touched(){var now=Date.now();"
+        # One filesystem sweep a minute at most, whatever calls this.
+        "if(now-_at<45000)return _hit;_at=now;var best=0;"
+        "try{var root=p.join(_e.app.getPath('userData'),'claude-code-sessions');"
+        "var orgs=fs.readdirSync(root);"
+        "for(var a=0;a<orgs.length;a++){var od=p.join(root,orgs[a]),accts;"
+        "try{accts=fs.readdirSync(od);}catch(_1){continue;}"
+        "for(var b=0;b<accts.length;b++){var ad=p.join(od,accts[b]),files;"
+        "try{files=fs.readdirSync(ad);}catch(_2){continue;}"
+        "for(var c=0;c<files.length;c++){if(files[c].indexOf('local_')!==0)continue;"
+        "try{var m=fs.statSync(p.join(ad,files[c])).mtimeMs;if(m>best)best=m;}catch(_3){}}}}"
+        # An unreadable session store is not evidence of idleness.
+        "}catch(_4){best=now;}"
+        "_hit=best;return _hit;}"
+        "globalThis.__ccWorkActive=function(){try{"
+        "var busy=(Date.now()-touched())<WIN;"
+        "if(busy!==_last){_last=busy;try{console.log('[cc-keep-awake] '+(busy?'working':'idle')+"
+        "' (idle window '+MIN+'m)');}catch(_5){}}"
+        "return busy;}catch(_6){return true;}};"
+        "}catch(_){}})();\n"
+    )
+    ix = ix + _gov
+    ix_changed = True
+    print("  Patched keep-awake to release when idle (function " + _fn + ", 30m window)")
+
 if ix_changed:
     with open(main_path, "w") as f:
         f.write(ix)
@@ -351,12 +721,12 @@ node --check "$EXTRACT/.vite/build/mainView.js"
 node --check "$MAIN_BUNDLE"
 
 echo "→ Repacking asar..."
-npx @electron/asar pack "$EXTRACT" /tmp/claude-ui-patched.asar
+npx @electron/asar pack "$EXTRACT" /tmp/claude-ui-patched-$TARGET.asar
 # Swap it in with a same-directory rename rather than copying over the live
 # file. Electron mmaps the asar, so truncating it under a RUNNING app corrupts
 # the pages it is still reading and can take the app down mid-write. A rename
 # leaves the old inode intact for anything that still has it open.
-cp /tmp/claude-ui-patched.asar "$ASAR.new"
+cp /tmp/claude-ui-patched-$TARGET.asar "$ASAR.new"
 mv -f "$ASAR.new" "$ASAR"
 
 echo "✓ Done. Restart Claude Desktop to apply changes."

@@ -7,6 +7,51 @@ Patches for the Claude Desktop Electron app via preload injection.
 - **Patched app version:** 3.2.1+claude1.24012.9 | **custom-ui.js:** v19
 - **GitHub:** https://github.com/behdadmansouri/claude-desktop-tweaks
 
+> **2026-08-25 - the DOM stopped carrying names, and sleep was never work-aware:** menu rows lost
+> their `textContent` in the 08-22 build (`items:["","Cloud","Remote Control","SSH"]` in every
+> `[cc-ws-debug]` line since). Everything keyed on text went blind at once: the current connection
+> read `""`, so the panel drove the connection menu on **every** click including Local→Local (the
+> slowness), no connection could be matched (the stuck host stage), and `sameItem` compared `""` to
+> `""` and would commit on any row. All of it now goes through `labelsOf()` / `bestLabel()`, which
+> read every label source and score the best. Sleep: the app claims `powerSaveBlocker` once at
+> startup whenever `keepAwakeEnabled` is true - a pref that defaults to false and gets flipped on
+> for you - and holds it until quit; `update-ui.sh` now gates that claim on recent session-file
+> activity (`CC_KEEPAWAKE_IDLE_MIN`, default 30). Also: per-project open-TODO counts on the tiles,
+> geometry-only sidebar detection for the usage chip, `update-ui.sh --official`, and
+> `scripts/share-sessions.sh`. Details: `memory/issues-fixed.md` #41-45.
+>
+> **`custom-ui/workspace.js` used to contain a literal NUL byte**, which made `grep` treat it as
+> binary and print nothing, silently, for a file full of matches. Stripped; keep it that way.
+>
+> **2026-08-21 (later) - stacking, switching, servers, window title:** the panel no longer hides
+> itself; it just sits at `z-index:30`, over page content and under the app's Radix overlays. It is
+> also floored at the workspace row's left edge so it can't cover the sidebar on a narrow window
+> (same treatment for the floating usage chip, via `cuSidebarRight()`). Project switching: the
+> connection menu was being driven on *every* click because `currentConn` never read, and the
+> 08-21 dedupe had dropped the "Local" row - both fixed. SSH hosts live in a **submenu**, and their
+> display names differ from their ssh targets (`Myserver`→`myserver`, `MyHostinger`→`root@…`); the
+> Remote column now merges `cc-ws-v4` + the app's own `desktop-recent-workspaces` + every host in
+> `~/.config/Claude/ssh_configs.json`, and each host heading opens an ssh file browser. New:
+> **ctrl+shift+F** opens a file/folder browser in the panel (the app's own is gated to started
+> sessions). ActivityWatch: the KWin watcher was fine, Electron just wasn't mirroring `document.title`
+> onto the window - `cc-set-title` does it directly. Details: `memory/issues-fixed.md` #36-40.
+>
+> **`scripts/update-ui.sh`'s python heredoc is UNQUOTED - comments in it are code.** No backticks,
+> no `$(`, no backslash escapes. Both rules were learned the hard way; see the maintenance note at
+> the end of `memory/issues-fixed.md` for the scan command.
+
+> **2026-08-21 panel overhaul + two chip fixes:** the project panel no longer fights the app for
+> the top of the stack - it hides itself whenever a native dialog/menu is open (`applyPanelVisibility`),
+> which is what makes Settings usable again. Clicking a project now **pins** its TODO preview
+> (`unpin` in the preview header releases it), the columns have a real 22px gutter, names have an
+> emoji/short/full radio, the preview pane can open any `.md`/`.txt` in the folder, and remote
+> folders preview over ssh. Panel size now scales with the window. Also fixed: menu navigation
+> committed by index and could open the wrong project; `sampleWS()` had been missing since July, so
+> nothing had recorded a remote folder in months. Details: `memory/issues-fixed.md` #30-35.
+>
+> Background update check runs at session start (`scripts/check-updates.sh`, wired via a
+> SessionStart hook in `.claude/settings.json`). It reports and never installs.
+
 > **2026-08-18 usage rebuild + panel geometry fix:** `usage.js` is back, rewritten against the
 > app's own `/api/organizations/<org>/usage` endpoint rather than the usage popover's DOM (the old
 > one could not be live by construction). The project panel is now a fixed-size two-pane box on
@@ -90,14 +135,16 @@ Electron processes risks LevelDB corruption.
 | File | Purpose |
 |------|---------|
 | `custom-ui/css.js` | Base CSS injection (sidebar leading-slot spacing, dark-mode workspace-panel override) |
-| `custom-ui/workspace.js` | The project selector panel: fixed-size two-pane box, folder click, markdown TODO.md preview, `emojiSuffix`, `_seenDialogs` |
+| `custom-ui/workspace.js` | The project selector panel: two-pane box sized from the viewport, folder click, pinned markdown preview of any `.md`/`.txt` in the folder (local via IPC, remote via ssh), emoji/short/full name modes, yields to the app's own dialogs, `emojiSuffix`, `_seenDialogs` |
 | `custom-ui/usage.js` | Live usage chip (context / 5-hour / weekly + time to reset). Polls `/api/organizations/<org>/usage` - the app's own tray-usage endpoint - instead of scraping the popover, which is why it can actually stay current. Debug with `window.__ccUsage()`. Endpoint + payload shape: `memory/architecture.md` |
 | `custom-ui/chrome.js` | Hides the in-app top bar (back/forward/search/sidebar-toggle) to reclaim ~44px. Matches on geometry only, never an attribute - and reverts itself if hiding collapses the page's visible text. `window.__ccTopbar.show()` to put it back |
 | `custom-ui/diag.js` | DOM beacon. CDP is blocked, so this is how a selector gets *measured* instead of guessed: one JSON line to the renderer log with usage buttons, top-bar drag regions, what constrains the chat column's width, and any limit nags. `window.__ccDump()`, or automatically 6s after load unless `localStorage['cc-diag']='0'` |
 | `custom-ui/bootstrap.js` | Scan loop + bootstrap (`injectBaseCSS` + `installUsage` + `dgBootstrap` + `installPanel` + `dismissLimitNags`) |
 | `custom-ui/titlewatch.js` | Sets `document.title` to the active session/conversation title so outside tools can read it. The app resets it to "Claude" on navigation, so it re-applies on a MutationObserver. Debug with `window.__ccTitleDebug()` in DevTools. Consumed by the Timekeeper project's ActivityWatch window watcher, which otherwise only ever sees the window titled "Claude" |
 | `custom-ui.js` | Build artifact -- generated by `update-ui.sh` from modules above |
-| `scripts/update-ui.sh` | Patch + deploy tool |
+| `scripts/update-ui.sh` | Patch + deploy tool. `--official` targets the official build instead, `--prefix DIR` anything else. Also makes "keep computer awake" mean *while working*: it rewrites the app's `keepAwakeEnabled` claim to consult `__ccWorkActive()` and re-checks every 60s |
+| `scripts/share-sessions.sh` | Points the official build's Code-tab session index at the patched profile's, so both show the same sessions. Only `claude-code-sessions/` is linked - transcripts are already shared. `--undo` reverses it |
+| `scripts/check-updates.sh` | Background update check: official build vs the apt index, the patched build vs the AUR, and whether the deployed asar is stale relative to `custom-ui/`. `--report` prints the last result offline. Reports only - never installs. Run at session start by the hook in `.claude/settings.json` |
 | `scripts/update-appimage.sh` | Updates the AUR package + re-extracts + re-patches in one go (calls `update-ui.sh`) |
 | `scripts/install-official.sh` | Installs/updates Anthropic's **official** Linux app into `~/.local/lib/claude-desktop-official` on an isolated profile, side by side with the patched build. Does not touch it. |
 | `scripts/claude-quit.sh` | Kill all Claude processes |

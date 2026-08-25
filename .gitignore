@@ -9,3 +9,7 @@ Thumbs.db
 
 # Temp work dirs (shouldn't be here, but just in case)
 /tmp/
+
+# Agent worktrees and machine-local harness settings
+/.claude/worktrees/
+/.claude/settings.local.json

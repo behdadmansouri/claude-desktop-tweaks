@@ -54,10 +54,42 @@ const TILE_PX = 30;
 const TILE_CSS = 'font-size:19px;line-height:1;display:flex;align-items:center;' +
   'justify-content:center;width:100%;height:100%;flex:none;';
 
-// Emoji-only mode - show just the emoji for each project, no names.
-const EMOJI_ONLY_KEY = 'cc-ws-emoji-only';
-const emojiOnly = () => { try { return localStorage.getItem(EMOJI_ONLY_KEY) === '1'; } catch { return false; } };
-const setEmojiOnly = v => { try { localStorage.setItem(EMOJI_ONLY_KEY, v ? '1' : '0'); } catch {} };
+// How much of a project's name to show. Three modes rather than the old
+// emoji-only boolean:
+//
+//   emoji - just the glyph, as a dense grid of square tiles
+//   short - glyph + the first few characters, two columns
+//   full  - glyph + the whole name, one column, wrapping rather than clipping
+//
+// `short` is the default because the truncated names were never actually the
+// problem - a couple of characters plus the emoji is enough to recognise a
+// project - but truncation you cannot escape IS a problem, which is what `full`
+// is for.
+const NAME_MODE_KEY  = 'cc-ws-name-mode';
+const NAME_MODES     = ['emoji', 'short', 'full'];
+const EMOJI_ONLY_KEY = 'cc-ws-emoji-only';   // superseded; read once to migrate
+const SHORT_CHARS    = 12;
+
+function nameMode() {
+  try {
+    const v = localStorage.getItem(NAME_MODE_KEY);
+    if (NAME_MODES.includes(v)) return v;
+    // Carry the old boolean over instead of silently resetting someone who had
+    // emoji-only turned on.
+    if (localStorage.getItem(EMOJI_ONLY_KEY) === '1') return 'emoji';
+  } catch {}
+  return 'short';
+}
+const setNameMode = v => { try { localStorage.setItem(NAME_MODE_KEY, v); } catch {} };
+
+// "Claude Desktop" → "Claude Desk…". Cuts on a word boundary when one is close
+// enough to the limit, so the label ends at a word rather than mid-syllable.
+function shortText(text) {
+  if (text.length <= SHORT_CHARS) return text;
+  const cut = text.slice(0, SHORT_CHARS);
+  const sp = cut.lastIndexOf(' ');
+  return (sp >= SHORT_CHARS - 4 ? cut.slice(0, sp) : cut).trimEnd() + '…';
+}
 
 const CC_TODOS = (typeof CC_AI_TODOS !== 'undefined') ? CC_AI_TODOS : {};
 function ccTodo(folder) {
@@ -72,6 +104,33 @@ function ccTodo(folder) {
 // anything that has no readable characters left afterwards - a tile whose label
 // is three zero-width spaces is unclickable and un-right-clickable, so it can
 // never be removed through the UI either.
+// ── how much attention a project is asking for ──────────────────────────────
+//
+// Counted off the same TODO.md text the preview pane already has (baked at
+// build time, refreshed live over cc-ai-data), so this costs one regex pass per
+// tile and needs no new IPC.
+//
+// Only OPEN boxes are counted. A file that is entirely ticked off reads as zero
+// - which is the useful signal: a project with nothing left to do should look
+// as quiet as a project with no TODO.md at all.
+//
+// Deliberately literal about the syntax: a line whose first non-space content
+// is a list bullet followed by [ ]. Anything looser starts counting checkboxes
+// quoted inside code fences and prose, and an inflated number is worse than no
+// number, because you'd stop trusting it.
+const OPEN_BOX_RE  = /^[ \t]*[-*+][ \t]+\[[ \t]\]/gm;
+const DONE_BOX_RE  = /^[ \t]*[-*+][ \t]+\[[xX]\]/gm;
+const _countRe = (text, re) => { re.lastIndex = 0; return (text.match(re) || []).length; };
+
+function todoCounts(folder) {
+  const text = ccTodo(folder);
+  if (typeof text !== 'string' || !text) return null;
+  const open = _countRe(text, OPEN_BOX_RE);
+  const done = _countRe(text, DONE_BOX_RE);
+  if (!open && !done) return null;   // a TODO.md with no checkboxes at all
+  return {open, done};
+}
+
 const hasReadable = s => /[\p{L}\p{N}]/u.test(s || '');
 function loadWS() {
   let raw;
@@ -100,6 +159,133 @@ function cleanLabel(s) {
   return (s || '').replace(/[\p{Cc}\p{Cf}\p{Co}]/gu, '').replace(/\s+/g, ' ').trim();
 }
 
+// Every string a menu row might be carrying its name in.
+//
+// Until 2026-08-21 the connection menu's rows read like "Local, environment
+// settings, right arrow" straight off textContent. Since the 08-22 build they
+// read "" - every [cc-ws-debug] line since logs `items:["","Cloud","Remote
+// Control","SSH"]` and `from:""`. The name moved out of the text node; matching
+// on textContent alone has been blind ever since, which is both why Local was
+// never recognised (so the connection menu was driven on every single click -
+// the slowness) and why no host could be selected.
+//
+// Rather than bet on where it moved to, collect every candidate and let the
+// scorer take the best. A row that still puts its name in textContent keeps
+// working; one that moved it to aria-label, a title, an aria-labelledby target
+// or a nested icon's alt now works too.
+function labelsOf(el) {
+  const out = [];
+  if (!el || !el.getAttribute) return out;
+  const push = v => { const c = cleanLabel(v); if (c && !out.includes(c)) out.push(c); };
+  push(el.getAttribute('aria-label'));
+  push(el.getAttribute('data-value'));
+  push(el.getAttribute('value'));
+  push(el.getAttribute('title'));
+  push(el.getAttribute('data-path'));
+  push(el.textContent);
+  // aria-labelledby points at elements elsewhere in the document, so it has to
+  // be dereferenced rather than read.
+  const by = el.getAttribute('aria-labelledby');
+  if (by) for (const id of by.split(/\s+/)) {
+    const t = id && document.getElementById(id);
+    if (t) push(t.textContent);
+  }
+  if (el.querySelectorAll) {
+    for (const k of el.querySelectorAll('[aria-label],[title],img[alt],[data-value]')) {
+      push(k.getAttribute('aria-label'));
+      push(k.getAttribute('title'));
+      push(k.getAttribute('alt'));
+      push(k.getAttribute('data-value'));
+    }
+  }
+  return out;
+}
+
+// The one label to show a human. First non-empty candidate, so aria-label wins
+// over a text node that may just be decoration.
+const bestLabel = el => labelsOf(el)[0] || '';
+
+// What a row is, for the debug beacon - so if the name has moved somewhere none
+// of the above looks, the next log line says exactly where to look instead of
+// leaving it to another round of guessing.
+function rowShape(el) {
+  if (!el || !el.attributes) return null;
+  const at = {};
+  for (const a of el.attributes) {
+    if (/^(class|style)$/.test(a.name)) continue;
+    at[a.name] = (a.value || '').slice(0, 60);
+  }
+  return {tag: el.tagName, at, txt: (el.textContent || '').trim().slice(0, 40),
+          html: (el.innerHTML || '').slice(0, 200)};
+}
+
+// ── the app's OWN record of where you've been ───────────────────────────────
+//
+// cc-ws-v4 only ever knew what our own code happened to observe, and between
+// July and 2026-08-21 it observed nothing at all (see sampleWS). The app has
+// been keeping the same information the whole time, in the renderer's own
+// localStorage under `desktop-recent-workspaces` - same origin, no IPC needed.
+// Reading it is how the Remote column gets populated with servers that were
+// never used while our panel happened to be watching.
+//
+// The shape isn't documented, so every field name it might plausibly use is
+// tried and anything unrecognised is skipped. The first parse logs a sample
+// under [cc-ws-recent] so the guesses can be narrowed against reality.
+const APP_RECENT_KEY = 'desktop-recent-workspaces';
+// Enough to tell "/home/z3z0/Documents/..." from "/root/000_myagents/...".
+// Derived from the baked local folder list rather than assumed, so it is right
+// on any machine this is deployed to.
+const HOME_HINT = (typeof CC_AI_LOCAL !== 'undefined' && CC_AI_LOCAL[0])
+  ? CC_AI_LOCAL[0].split('/').slice(0, 3).join('/') + '/'
+  : '/home/';
+let _loggedRecent = false;
+
+const _pick = (o, names) => {
+  for (const n of names) {
+    let v = o[n];
+    if (v && typeof v === 'object') v = v.name || v.displayName || v.id;
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return '';
+};
+
+function appRecentWorkspaces() {
+  let data;
+  try { data = JSON.parse(localStorage.getItem(APP_RECENT_KEY) || 'null'); } catch { return []; }
+  if (!data) return [];
+  const list = Array.isArray(data) ? data
+    : Array.isArray(data.workspaces) ? data.workspaces
+    : Array.isArray(data.recent) ? data.recent : [];
+  if (list.length && !_loggedRecent) {
+    _loggedRecent = true;
+    console.log('[cc-ws-recent]', JSON.stringify(list.slice(0, 3)));
+  }
+  const out = [];
+  for (const w of list) {
+    if (!w || typeof w !== 'object') continue;
+    const folder = cleanLabel(_pick(w, ['path', 'folder', 'directory', 'cwd', 'workingDirectory', 'workspacePath']));
+    if (!folder) continue;
+    const conn = cleanLabel(_pick(w, ['connectionName', 'connection', 'environmentName', 'environment', 'host', 'sshHost', 'hostName'])) || 'Local';
+    out.push({conn, folder});
+  }
+  return out;
+}
+
+// Every SSH connection configured in the app, whether or not a folder has ever
+// been recorded for it - so an unused server still shows up as a heading you can
+// see rather than being invisible. Read once; the file changes rarely.
+let _sshHosts = null;
+function loadSshHosts() {
+  if (_sshHosts || !window.ccBridge || !window.ccBridge.sshConfigs) return;
+  _sshHosts = [];
+  window.ccBridge.sshConfigs().then(r => {
+    if (r && r.ok && Array.isArray(r.hosts)) {
+      _sshHosts = r.hosts.map(h => cleanLabel(h.name)).filter(Boolean);
+      rebuildPanel();
+    }
+  }).catch(() => {});
+}
+
 function recordWS(conn, folder) {
   conn = cleanLabel(conn);
   folder = cleanLabel(folder);
@@ -118,7 +304,41 @@ function forgetWS(conn, folder) {
   rebuildPanel();
 }
 
+// Which connection the app is on RIGHT NOW.
+//
+// The button's own label is the direct answer and is tried first, but on the
+// current build it reads "" (see labelsOf), and an unknown current connection
+// is what forced the connection menu open on every click. So fall back to two
+// records of app state that are readable regardless of how the button is
+// labelled:
+//
+//   2. the app's own `desktop-recent-workspaces` - its newest entry IS the
+//      current workspace, and it carries the connection name.
+//   3. whatever we ourselves last successfully switched to.
+//
+// Order matters: the live button beats a stored record, and the app's record
+// beats ours, since the user can switch connections without going through us.
+const LAST_CONN_KEY = 'cc-ws-lastconn';
+function currentConnection(connBtn) {
+  const direct = connBtn ? bestLabel(connBtn) : '';
+  if (direct) return {name: direct, via: 'button'};
+  const recent = appRecentWorkspaces();
+  if (recent.length && recent[0].conn) return {name: recent[0].conn, via: 'app-recent'};
+  try {
+    const v = localStorage.getItem(LAST_CONN_KEY);
+    if (v) return {name: v, via: 'ours'};
+  } catch (_) {}
+  return {name: '', via: 'unknown'};
+}
+const rememberConn = name => {
+  try { localStorage.setItem(LAST_CONN_KEY, cleanLabel(name)); } catch (_) {}
+};
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Whitespace-collapsed text of an element, for comparing two DOM nodes that may
+// be the same menu row wrapped twice.
+const flatText = el => (el && el.textContent || '').replace(/\s+/g, ' ').trim();
 
 // Full pointer-event sequence for Radix UI / React
 function fireClick(el) {
@@ -167,8 +387,32 @@ async function waitNewMenu(ms = 2500) {
   }
   if (!candidate) return [];
 
-  const grab = () => [...candidate.querySelectorAll(_ITEM_SEL)]
-    .filter(i => i.textContent.trim() && !i.querySelector('[role="menuitem"],[role="option"]'));
+  // Innermost matches only. _ITEM_SEL lists both `li` and `button`, so a menu
+  // built as `<li><button>Pebble</button></li>` produced TWO entries for one
+  // visible row - and the old filter (drop anything containing a [role=menuitem])
+  // did not catch it, because a plain button carries no role. A menu of N rows
+  // could therefore come back as a list of 2N, and the keyboard fallback
+  // navigates by INDEX: `indexOf(target)` counted phantom rows, pressed
+  // ArrowDown that many times, and committed whatever was highlighted when it
+  // stopped. That is the "I picked Pebble and it opened Time Management" bug -
+  // not a matching failure, an off-by-N walk. keyboardPick() below now verifies
+  // the highlight before pressing Enter, so this is belt and braces.
+  //
+  // Only ever drops an ancestor whose text is IDENTICAL to a descendant's - that
+  // is the duplication (`<li><button>Pebble</button></li>`), and it is the only
+  // case where dropping is safe. A blanket "keep innermost" was tried on
+  // 2026-08-21 and immediately broke the connection menu: its "Local" row
+  // contains a nested control, so the labelled row was discarded in favour of an
+  // unlabelled child and the menu scraped as ["", "Cloud", "Remote Control",
+  // "SSH"]. Local vanished, no match was found, and clickWorkspace bailed before
+  // it ever reached the folder step - which is how a fix for picking the wrong
+  // project turned into not being able to pick any project.
+  const flat = s => (s || '').replace(/\s+/g, ' ').trim();
+  const grab = () => {
+    const raw = [...candidate.querySelectorAll(_ITEM_SEL)].filter(i => flat(i.textContent));
+    return raw.filter(el => !raw.some(o =>
+      o !== el && el.contains(o) && flat(o.textContent) === flat(el.textContent)));
+  };
 
   let items = grab();
   let lastCount = items.length;
@@ -210,13 +454,30 @@ function matchFolder(itemText, folder) {
   return matchScore(itemText, folder) > 0;
 }
 
+// Score a whole element rather than one string off it: the caller's own
+// accessor first (it knows which attribute this particular menu prefers), then
+// every other place the name might live. Best of all of them wins, so adding
+// candidates can only ever turn a miss into a hit - never a hit into a
+// different hit, because the scores are compared, not concatenated.
+function scoreEl(el, folder, textOf) {
+  let best = 0;
+  if (textOf) best = matchScore(textOf(el), folder);
+  if (best >= 3) return best;
+  for (const c of labelsOf(el)) {
+    const s = matchScore(c, folder);
+    if (s > best) best = s;
+    if (best >= 3) break;
+  }
+  return best;
+}
+
 // Best candidate, or null. A merely-substring match (score 1) is only accepted
 // when it is the single candidate in the whole menu - otherwise it is exactly
 // the ambiguity that used to open the wrong project.
 function bestMatch(items, folder, textOf) {
   let best = null, bestScore = 0, bestCount = 0;
   for (const el of items) {
-    const s = matchScore(textOf(el), folder);
+    const s = scoreEl(el, folder, textOf);
     if (s === 0) continue;
     if (s > bestScore) { best = el; bestScore = s; bestCount = 1; }
     else if (s === bestScore) bestCount++;
@@ -225,6 +486,66 @@ function bestMatch(items, folder, textOf) {
   if (bestScore === 1 && bestCount > 1) return null;
   if (bestScore >= 2 && bestCount > 1) console.warn('[cc-ws] ambiguous folder match for', folder);
   return best;
+}
+
+// Whatever the open menu currently considers selected. Radix marks it with
+// data-highlighted; a plain listbox uses aria-selected; some builds only move
+// DOM focus.
+function menuHighlighted() {
+  const menu = document.querySelector(_MENU_SEL);
+  if (!menu) return null;
+  const marked = menu.querySelector('[data-highlighted],[aria-selected="true"]');
+  if (marked) return marked;
+  const a = document.activeElement;
+  return (a && a !== document.body && menu.contains(a)) ? a : null;
+}
+
+// Identity first, text only as a fallback - and only when there IS text.
+// The old last clause compared two trimmed textContents for equality, which on
+// the current build compares "" to "" and returns true for EVERY row: the
+// keyboard walk would then press Enter on whatever happened to be highlighted,
+// believing it had arrived. Same class of failure as the matcher above, and the
+// more dangerous half of it, because it commits.
+const sameItem = (hot, target) => {
+  if (!hot) return false;
+  if (hot === target || hot.contains(target) || target.contains(hot)) return true;
+  const a = bestLabel(hot), b = bestLabel(target);
+  return !!a && !!b && a === b;
+};
+
+// Walk a Radix menu with the arrow keys - which is the one input path that
+// doesn't check event.isTrusted - and press Enter ONLY once the thing actually
+// highlighted is the thing we want.
+//
+// The previous version computed an index, pressed ArrowDown that many times, and
+// committed blind. Every way that can drift (a duplicated scrape entry, a
+// disabled row the menu skips, a row that arrives late, Home not being handled)
+// ends the same way: the wrong project opens, silently, with no clue that
+// anything went wrong. Checking the highlight each step costs a few frames and
+// turns every one of those into "nothing happened", which is recoverable.
+async function keyboardPick(items, target) {
+  if (items.indexOf(target) < 0) return false;
+  const start = (document.activeElement && document.activeElement !== document.body)
+    ? document.activeElement : target;
+  const kd = key =>
+    start.dispatchEvent(new KeyboardEvent('keydown', {key, code: key, bubbles: true, cancelable: true}));
+
+  kd('Home');
+  await sleep(70);
+  // items.length + 2 steps is a full lap plus slack: menus wrap at the end, so
+  // this reaches every row no matter where Home actually left the highlight.
+  for (let i = 0; i <= items.length + 2; i++) {
+    if (sameItem(menuHighlighted(), target)) {
+      kd('Enter');
+      start.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+      await sleep(220);
+      return true;
+    }
+    kd('ArrowDown');
+    await sleep(50);
+  }
+  console.warn('[cc-ws] never highlighted the target row; not committing');
+  return false;
 }
 
 // Call React's own event handlers via the fiber tree.
@@ -263,6 +584,38 @@ function findWsBtns(wsRow) {
   return [connBtn, folderBtn];
 }
 
+// Notices what the workspace row is set to after the user has changed it by
+// hand, and records it - which is how a connection/folder they picked
+// themselves turns up in the panel next time.
+//
+// This is the ONLY writer of cc-ws-v4, and cc-ws-v4 is the entire source of the
+// Remote column. It went missing in the 2026-07-12 trim while its call site in
+// installPanel stayed, so every click on the workspace row has been throwing a
+// ReferenceError out of a capture-phase listener since, and no remote folder has
+// been recorded at all - the Remote column has just been showing whatever was in
+// localStorage from before that. Worth knowing when reading the panel's remote
+// entries as evidence of anything.
+//
+// Deferred: the click is captured on the way DOWN, so at that instant the row
+// still shows the OLD selection. React needs a beat to repaint the labels.
+function sampleWS(wsRow) {
+  setTimeout(() => {
+    try {
+      if (!wsRow.isConnected) return;
+      const [connBtn, folderBtn] = findWsBtns(wsRow);
+      if (!connBtn || !folderBtn) return;
+      const conn = cleanLabel(connBtn.textContent);
+      const folder = cleanLabel(folderBtn.textContent);
+      if (!conn || !folder) return;
+      // The folder button reads as a call to action when nothing is chosen yet.
+      if (/^(open|browse|select|choose|add|no) /i.test(folder)) return;
+      recordWS(conn, folder);
+    } catch (e) {
+      console.error('[cc-ws] sampleWS', e);
+    }
+  }, 900);
+}
+
 async function clickWorkspace(conn, folder, wsRow) {
   console.log('[cc-ws] clickWorkspace', conn, folder);
   if (!wsRow?.isConnected) { console.log('[cc-ws] wsRow disconnected'); return; }
@@ -270,66 +623,130 @@ async function clickWorkspace(conn, folder, wsRow) {
   console.log('[cc-ws] buttons found:', !!connBtn, !!folderBtn);
   if (!connBtn || !folderBtn) return;
 
-  const currentConn = connBtn.querySelector('span,div')?.textContent?.trim() || '';
-  console.log('[cc-ws] currentConn:', currentConn, '→ want:', conn);
-  if (currentConn !== conn) {
+  // Where we are now, from whichever of the three sources can actually answer
+  // (see currentConnection). An unknown current connection is what forced the
+  // connection menu open on EVERY click, including the overwhelmingly common
+  // Local→Local case: all the fragility of that path was being paid for when
+  // there was nothing to switch. That is the slowness.
+  const here = currentConnection(connBtn);
+  const currentConn = here.name;
+  const normConn = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  // The label reads like "Local, environment settings, right arrow", so this is
+  // containment, not equality.
+  const alreadyOn = !!currentConn && normConn(currentConn).includes(normConn(conn));
+  console.log('[cc-ws] currentConn:', currentConn, '(via ' + here.via + ')',
+              '→ want:', conn, 'alreadyOn:', alreadyOn);
+  if (!alreadyOn) {
     fireClick(connBtn);
-    const connItems = await waitNewMenu();
-    console.log('[cc-ws] conn menu items:', connItems.map(i => i.textContent.trim()));
-    const connTarget = connItems.find(el => {
-      const t = el.textContent.trim().toLowerCase();
-      const c = conn.toLowerCase();
-      // "Myserver" matches "myserver", "my server", "my server (ssh)", etc.
-      return t.includes(c) || t.replace(/\s+/g, '').includes(c.replace(/\s+/g, ''));
-    });
+    let connItems = await waitNewMenu();
+    console.log('[cc-ws] conn menu items:', connItems.map(bestLabel));
+
+    // The connection menu is a menu of CATEGORIES - Local / Cloud / Remote
+    // Control / SSH - and the actual hosts live in a submenu under SSH. The old
+    // code only ever looked at the top level, so a host name was never among the
+    // items and switching to one could not work no matter how the matching was
+    // written. If the host isn't at the top level, open the category and look
+    // again.
+    const wantHost = normConn(conn) !== 'local';
+    const listed = () => connItems.some(el =>
+      labelsOf(el).some(l => normConn(l).includes(normConn(conn))));
+    if (wantHost && !listed()) {
+      const cat = connItems.find(el => /^ssh\b/i.test(bestLabel(el))) ||
+        connItems.find(el => labelsOf(el).some(l => /ssh/i.test(l)));
+      if (cat) {
+        console.log('[cc-ws] opening SSH submenu for', conn);
+        // Submenus open on hover as well as click; fireClick sends pointerover
+        // first, which is what actually triggers a Radix submenu.
+        fireClick(cat);
+        const sub = await waitNewMenu(3000);
+        if (sub.length) connItems = sub;
+        console.log('[cc-ws] submenu items:', connItems.map(bestLabel));
+      }
+    }
+    // Best match, not first match, and never one of the menu's own actions.
+    // "Add SSH host…" contains no host name, but "Manage Myserver…" would, and
+    // picking that opens a settings dialog instead of switching the connection -
+    // which is one of the ways switching hosts appeared to just not work.
+    const CONN_ACTION_RE = /^(add|set up|setup|manage|configure|connect to|new)\b/i;
+    const connTarget = bestMatch(
+      connItems.filter(el => !labelsOf(el).some(l => CONN_ACTION_RE.test(l))),
+      conn, bestLabel);
     const dbgConn = {
-      ts: Date.now(), stage: 'conn', conn, from: currentConn, found: !!connTarget,
-      items: connItems.map(i => i.textContent.trim().slice(0, 40)),
+      ts: Date.now(), stage: 'conn', conn, from: currentConn, via: here.via,
+      found: !!connTarget,
+      items: connItems.map(el => labelsOf(el).join(' | ').slice(0, 60)),
+      // If the name has moved somewhere labelsOf still doesn't look, this says
+      // where it actually is. Only the first two rows, to keep the line short.
+      shapes: connItems.slice(0, 2).map(rowShape),
     };
     localStorage.setItem('cc-ws-debug', JSON.stringify(dbgConn));
     console.error('[cc-ws-debug]', JSON.stringify(dbgConn));
-    if (!connTarget) { console.log('[cc-ws] conn target not found'); document.body.click(); return; }
+    // Not finding the connection is no longer fatal. Failing to switch is a
+    // reason to skip the switch, not a reason to abandon picking the folder -
+    // and since `alreadyOn` above can only be trusted when the label reads,
+    // "couldn't find it" very often just means we were already there.
+    if (!connTarget) {
+      console.log('[cc-ws] conn target not found; continuing with the current connection');
+      document.body.click();
+      await sleep(200);
+    } else {
+      // "The menu closed and the button no longer says what it used to."
+      // When the button has no readable label at all (the current build), the
+      // second half can't be evaluated, so menu-closed is the only evidence
+      // available - treat that as committed rather than retrying three ways
+      // against a check that can never pass.
+      const connCommitted = () => {
+        if (document.querySelector(_MENU_SEL)) return false;
+        const now = bestLabel(connBtn);
+        if (!now || !currentConn) return true;
+        return !normConn(now).includes(normConn(currentConn));
+      };
 
-    const connCommitted = () => !document.querySelector(_MENU_SEL) &&
-      (connBtn.querySelector('span,div')?.textContent?.trim() || '').toLowerCase() !== currentConn.toLowerCase();
-
-    // Approach 1: React fiber handler - bypasses isTrusted
-    tryFiberClick(connTarget);
-    await sleep(220);
-
-    // Approach 2: keyboard nav - Radix keydown doesn't check isTrusted
-    if (!connCommitted()) {
-      const idx = connItems.indexOf(connTarget);
-      const el = (document.activeElement && document.activeElement !== document.body)
-        ? document.activeElement : connTarget;
-      const kd = (key, code) =>
-        el.dispatchEvent(new KeyboardEvent('keydown', {key, code, bubbles: true, cancelable: true}));
-      kd('Home', 'Home');
-      await sleep(60);
-      for (let i = 0; i < idx; i++) { kd('ArrowDown', 'ArrowDown'); await sleep(45); }
-      kd('Enter', 'Enter');
-      el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+      // Approach 1: React fiber handler - bypasses isTrusted
+      tryFiberClick(connTarget);
       await sleep(220);
-    }
 
-    // Approach 3: synthetic pointer sequence (last resort)
-    if (!connCommitted()) {
-      const stillOpen = document.querySelector(_MENU_SEL);
-      const hot = (stillOpen?.querySelector('[data-highlighted],[aria-selected="true"]')) || connTarget;
-      fireClick(hot);
-      await sleep(220);
-    }
+      // Approach 2: keyboard nav - Radix keydown doesn't check isTrusted
+      if (!connCommitted()) await keyboardPick(connItems, connTarget);
 
-    console.error('[cc-ws-debug] conn committed=' + connCommitted());
+      // Approach 3: synthetic pointer sequence (last resort)
+      if (!connCommitted()) { fireClick(connTarget); await sleep(220); }
 
-    await sleep(400);
-    const dialog = [...document.querySelectorAll('[role="dialog"]')]
-      .find(d => d.offsetParent && !_seenDialogs.has(d));
-    if (dialog) {
-      const opts = [...dialog.querySelectorAll('[role="option"],li,button')]
-        .filter(el => el.textContent.trim() && el.offsetParent);
-      if (opts.length === 1) { fireClick(opts[0]); await sleep(400); }
-      else return;
+      console.error('[cc-ws-debug] conn committed=' + connCommitted());
+      await sleep(400);
+      // Switching to an SSH connection can put up a host-picker dialog. The old
+      // code only ever handled the degenerate one-option case and gave up
+      // otherwise - which, with more than one host configured, meant the dialog
+      // opened and simply sat there. That is the "it opens the host selector and
+      // can't select the other host" symptom. Pick by name, the same scored way
+      // folders are picked, and only fall back to the single-option shortcut.
+      const dialog = [...document.querySelectorAll('[role="dialog"]')]
+        .find(d => d.offsetParent && !_seenDialogs.has(d));
+      if (dialog) {
+        _seenDialogs.add(dialog);
+        const raw = [...dialog.querySelectorAll('[role="option"],li,button')]
+          .filter(el => el.textContent.trim() && el.offsetParent);
+        const opts = raw.filter(el => !raw.some(o =>
+          o !== el && el.contains(o) && flatText(o) === flatText(el)));
+        const HOST_ACTION_RE = /^(cancel|close|back|add|new|manage|help)\b/i;
+        const pickable = opts.filter(el => !labelsOf(el).some(l => HOST_ACTION_RE.test(l)));
+        const hostTarget = bestMatch(pickable, conn, bestLabel) ||
+          (pickable.length === 1 ? pickable[0] : null);
+        console.error('[cc-ws-debug]', JSON.stringify({
+          ts: Date.now(), stage: 'conn-dialog', conn, found: !!hostTarget,
+          options: pickable.map(el => labelsOf(el).join(' | ').slice(0, 60)),
+          shapes: pickable.slice(0, 2).map(rowShape),
+        }));
+        if (hostTarget) {
+          if (!tryFiberClick(hostTarget)) fireClick(hostTarget);
+          await sleep(400);
+          // Some builds want an explicit confirm after selecting the host.
+          const confirm = [...dialog.querySelectorAll('button')]
+            .filter(b => b.offsetParent)
+            .find(b => /^(connect|select|ok|continue|done)$/i.test((b.textContent || '').trim()));
+          if (confirm) { if (!tryFiberClick(confirm)) fireClick(confirm); await sleep(400); }
+        }
+      }
     }
   }
 
@@ -377,27 +794,18 @@ async function clickWorkspace(conn, folder, wsRow) {
     if (committed()) { console.error('[cc-ws-debug] committed via fiber'); return; }
 
     // Approach 2: Keyboard navigation - Radix keydown doesn't check isTrusted
-    const targetIdx = folderItems.indexOf(folderTarget);
-    if (targetIdx >= 0) {
-      console.log('[cc-ws] keyboard nav to idx', targetIdx);
-      const el = (document.activeElement && document.activeElement !== document.body)
-        ? document.activeElement : folderTarget;
-      const kd = (key, code) =>
-        el.dispatchEvent(new KeyboardEvent('keydown', {key, code, bubbles: true, cancelable: true}));
-      kd('Home', 'Home');
-      await sleep(60);
-      for (let i = 0; i < targetIdx; i++) { kd('ArrowDown', 'ArrowDown'); await sleep(45); }
-      kd('Enter', 'Enter');
-      el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-      await sleep(200);
+    if (folderItems.indexOf(folderTarget) >= 0) {
+      const picked = await keyboardPick(folderItems, folderTarget);
       const stillOpen = document.querySelector(_MENU_SEL);
       if (stillOpen) {
-        const hot = stillOpen.querySelector('[data-highlighted],[aria-selected="true"],[data-state="checked"]') || folderTarget;
-        console.log('[cc-ws] Enter did not commit; clicking highlighted item');
-        if (!tryFiberClick(hot)) fireClick(hot);
+        // Only ever click the target itself now. The old code clicked whatever
+        // was highlighted when Enter failed, which is how a mistimed walk turned
+        // into "it opened some other project".
+        console.log('[cc-ws] Enter did not commit; clicking the target directly');
+        if (!tryFiberClick(folderTarget)) fireClick(folderTarget);
         await sleep(140);
       }
-      console.error('[cc-ws-debug] after keyboard nav, committed=' + committed());
+      console.error('[cc-ws-debug] after keyboard nav, picked=' + picked + ' committed=' + committed());
       return;
     }
 
@@ -467,10 +875,48 @@ async function clickWorkspace(conn, folder, wsRow) {
         .filter(i => ACTION_LABELS.test((i.textContent || '').trim()))
         .map(i => i.textContent.trim());
 
-      const exactTarget = bestMatch(entries, folder, el => el.textContent);
-      dbg.exactMatchFound = !!exactTarget;
-      if (exactTarget) {
-        if (!tryFiberClick(exactTarget)) fireClick(exactTarget);
+      // Walk the path one segment at a time, clicking only entries that are an
+      // EXACT match for the segment we are looking for and re-reading the
+      // listing after each step. A remote path is almost never a single hop from
+      // wherever the browser opens, which is why matching only the final
+      // basename in the first listing found nothing and left the dialog sitting
+      // open. Still no blind "Go" and no Enter: a segment that isn't listed
+      // stops the walk, and the dialog is left open where the user can finish it
+      // by hand.
+      const listEntries = () => {
+        const all = [...dlg.querySelectorAll(_ITEM_SEL)]
+          .filter(i => i.textContent.trim() && i.offsetParent);
+        const inner = all.filter(el => !all.some(o => o !== el && el.contains(o)));
+        return inner.filter(i => !ACTION_LABELS.test((i.textContent || '').trim()));
+      };
+      const segs = folder.split('/').filter(Boolean);
+      dbg.pathSegments = segs;
+      dbg.walked = [];
+      let cur = entries;
+      let si = 0, landed = false;
+      for (let hops = 0; hops < segs.length + 2 && si < segs.length; hops++) {
+        // The browser may already have opened partway down the path, so look for
+        // the EARLIEST remaining segment that is listed here rather than
+        // insisting on the next one. Exact text only - a path segment is a known
+        // literal string, and a fuzzy match here would drill into the wrong
+        // directory tree, which is the failure mode worth avoiding most.
+        let at = -1, hit = null;
+        for (let k = si; k < segs.length; k++) {
+          const m = cur.find(el => (el.textContent || '').trim() === segs[k]);
+          if (m) { at = k; hit = m; break; }
+        }
+        if (!hit) break;
+        if (!tryFiberClick(hit)) fireClick(hit);
+        dbg.walked.push(segs[at]);
+        si = at + 1;
+        landed = si >= segs.length;
+        if (landed) break;
+        await sleep(450);
+        if (!dlg.isConnected) break;
+        cur = listEntries();
+      }
+      dbg.exactMatchFound = landed;
+      if (landed) {
         await sleep(300);
         const selectBtn = [...dlg.querySelectorAll('button')]
           .filter(b => b.offsetParent)
@@ -478,10 +924,6 @@ async function clickWorkspace(conn, folder, wsRow) {
         dbg.selectFolderBtnFound = !!selectBtn;
         if (selectBtn) { if (!tryFiberClick(selectBtn)) fireClick(selectBtn); await sleep(200); }
       }
-      // No exact match in the current listing: the target is probably nested
-      // deeper than this dialog's starting directory. Leaving the dialog open
-      // rather than guessing - logging tells us the real starting dir/depth
-      // needed to extend this (e.g. drill into a parent match) next round.
     }
     localStorage.setItem('cc-ws-debug', JSON.stringify(dbg));
     console.error('[cc-ws-debug]', JSON.stringify(dbg));
@@ -523,7 +965,9 @@ async function clickWorkspace(conn, folder, wsRow) {
 function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   const raw = folder.split('/').filter(Boolean).pop() || folder;
   const {emoji, text} = splitEmoji(raw);
-  const compact = !!(opts.compact && emoji);
+  const mode = opts.mode || 'short';
+  const compact = mode === 'emoji' && !!emoji;
+  const host = opts.remote ? conn : null;
 
   const b = document.createElement('button');
   b.type = 'button';
@@ -537,7 +981,8 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
     (compact
       // A real square, so the hit target matches the glyph you can see.
       ? 'padding:0;width:' + TILE_PX + 'px;height:' + TILE_PX + 'px;flex:none;justify-content:center;'
-      : 'padding:3px 6px;line-height:1.6;width:100%;');
+      : 'padding:3px 6px;line-height:1.6;width:100%;') +
+    (mode === 'full' ? 'align-items:flex-start;' : '');
 
   if (emoji) {
     const e = document.createElement('span');
@@ -547,34 +992,92 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   }
   if (!compact) {
     const t = document.createElement('span');
-    t.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    t.textContent = emoji ? text : raw;
+    const label = emoji ? text : raw;
+    if (mode === 'full') {
+      // Wrap rather than clip: "full" has to mean the name is actually readable,
+      // otherwise it's just "short" with a wider box.
+      t.style.cssText = 'min-width:0;overflow-wrap:anywhere;white-space:normal;';
+      t.textContent = label;
+    } else {
+      t.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      t.textContent = shortText(label);
+    }
     b.appendChild(t);
+  }
+
+  // ── open-TODO indicator ───────────────────────────────────────────────────
+  //
+  // Emoji mode has no room for a number, so it gets a dot in the corner; the
+  // named modes get the count itself, right-aligned. Same data either way, and
+  // both carry the full "N open of M" in the tooltip, so the dot is a prompt to
+  // look rather than the whole answer.
+  //
+  // Intensity is stepped, not continuous: at a glance you're asking "is this
+  // one quiet, busy, or piling up", and three levels answer that. A gradient
+  // would imply a precision the number already gives you.
+  const counts = todoCounts(folder);
+  if (counts && counts.open > 0) {
+    const n = counts.open;
+    const level = n >= 10 ? 2 : n >= 4 ? 1 : 0;
+    const alpha = [0.42, 0.66, 0.95][level];
+    b.title = folder + '  —  ' + n + ' open' +
+      (counts.done ? ' of ' + (n + counts.done) : '') +
+      (opts.removable ? '  (right-click to forget)' : '');
+
+    if (compact) {
+      // The tile is a fixed square and the dot sits on its corner, so the
+      // button has to become the positioning context. Nothing else in the tile
+      // is positioned, so this is safe.
+      b.style.position = 'relative';
+      const dot = document.createElement('span');
+      dot.style.cssText =
+        'position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;' +
+        'pointer-events:none;background:currentColor;opacity:' + alpha + ';' +
+        // A ring in the panel's own background colour, so the dot reads as
+        // separate from the glyph rather than as part of it.
+        'box-shadow:0 0 0 1.5px var(--bg-100,rgba(0,0,0,.55));';
+      b.appendChild(dot);
+    } else {
+      const badge = document.createElement('span');
+      badge.style.cssText =
+        'margin-left:auto;flex:none;font-size:9.5px;font-weight:700;' +
+        'font-variant-numeric:tabular-nums;line-height:1;padding:1px 4px;' +
+        'border-radius:7px;pointer-events:none;opacity:' + alpha + ';' +
+        'background:var(--bg-300,rgba(128,128,128,.22));';
+      badge.textContent = String(n);
+      b.appendChild(badge);
+    }
   }
 
   b.onmouseenter = () => { b.style.background = 'var(--bg-200,rgba(128,128,128,.15))'; };
   b.onmouseleave = () => { b.style.background = 'transparent'; };
-  b.onclick = e => { e.stopPropagation(); clickWorkspace(conn, folder, wsRow); };
+  // One click does both jobs: opens the workspace AND pins the preview to it.
+  // Pinning first, so the pane is already showing the right project while the
+  // (async, multi-step, occasionally slow) workspace switch runs.
+  b.onclick = e => {
+    e.stopPropagation();
+    pinTodoPreview(folder, host);
+    clickWorkspace(conn, folder, wsRow);
+  };
   // Right-click forgets a recorded entry. Only offered where it does something:
   // the Local list comes from cc-folders.json, so removing it from cc-ws-v4
   // wouldn't make the tile disappear. No confirm dialog - the entry re-records
   // itself the next time the workspace is actually used.
   if (opts.removable) {
-    b.title = folder + '  (right-click to forget)';
+    // Only when the TODO badge hasn't already written a richer title (which
+    // includes the same hint) - otherwise the count is thrown away here.
+    if (!counts || !counts.open) b.title = folder + '  (right-click to forget)';
     b.oncontextmenu = e => {
       e.preventDefault();
       e.stopPropagation();
       forgetWS(conn, folder);
     };
   }
-  // TODO preview works for any folder we have baked/live text for, not just
-  // Local - if a future data source ever populates ccTodo() for remote paths
-  // (e.g. a remote fetch), the hover just starts working. Today
-  // __CC_TODOS__/CC_AI_TODOS are only populated for Local (cc-ai-data-v2 reads
-  // the local filesystem - see update-ui.sh), so remote entries fall through
-  // to "No TODO.md". Hooked up unconditionally so a folder without one clears
-  // the pane instead of leaving the previous project's list sitting there.
-  b.addEventListener('mouseenter', () => showTodoPreview(folder));
+  // Local folders read from the baked snapshot or the local-fs bridge; remote
+  // ones are fetched over ssh on demand (see fetchDoc / cc-read-remote). Hooked
+  // up unconditionally so a folder without a TODO.md clears the pane instead of
+  // leaving the previous project's list sitting there.
+  b.addEventListener('mouseenter', () => showTodoPreview(folder, {host}));
   return b;
 }
 
@@ -586,42 +1089,50 @@ function colHeader(label) {
   return hdr;
 }
 
-// `compact` = emoji-only tiles. Folders with no leading emoji have nothing to
-// show as a tile, so they're dropped from the grid entirely rather than
-// rendered as a full-width named row (which broke the wrap layout).
+const hasEmoji = f => !!splitEmoji(f.split('/').filter(Boolean).pop() || f).emoji;
+
+// Layout follows the name mode: emoji is a dense wrap of tiles, short is two
+// columns of clipped names, full is one column of complete ones. Folders with no
+// emoji have nothing to show as a tile, so in emoji mode they're dropped from
+// the grid rather than rendered as a full-width named row (which broke the wrap
+// layout).
 function folderGrid(conn, folders, wsRow, opts = {}) {
   const grid = document.createElement('div');
-  // Emoji-only tiles are tiny, so pack them densely; named rows get 2 columns
-  // once the list is long enough to be worth splitting.
-  if (opts.compact) {
+  const mode = opts.mode || 'short';
+  if (mode === 'emoji') {
     grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;';
-    folders = folders.filter(f => splitEmoji(f.split('/').filter(Boolean).pop() || f).emoji);
-  } else if (folders.length > 4) {
+    folders = folders.filter(hasEmoji);
+  } else if (mode === 'short' && folders.length > 4) {
     // minmax(0,1fr), not 1fr. A grid item defaults to min-width:auto, so it
     // refuses to shrink below its content and overflows its track instead -
     // which is how the Local column's second column ended up painted 96px into
     // the Remote column. Measured on the real folder list: 14 of 25 rows spilled.
-    grid.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 6px;';
+    // The 16px column gutter is deliberate breathing room, not decoration: with
+    // 6px there was no safe path for the pointer between two columns of rows.
+    grid.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 16px;';
   }
   for (const folder of folders) grid.appendChild(makeFolderBtn(conn, folder, wsRow, opts));
   return grid;
+}
+
+// The mode this column will actually use: emoji mode falls back to short when
+// the column has no emoji to show, rather than rendering as empty.
+function columnMode(folders) {
+  const m = nameMode();
+  return (m === 'emoji' && !folders.some(hasEmoji)) ? 'short' : m;
 }
 
 function buildColumn(conn, folders, wsRow) {
   const col = document.createElement('div');
   col.style.cssText = 'flex:1;min-width:0;';
   col.appendChild(colHeader(conn));
-  // If emoji-only filtering would empty the column, show the full list instead
-  // of nothing.
-  const compact = emojiOnly() &&
-    folders.some(f => splitEmoji(f.split('/').filter(Boolean).pop() || f).emoji);
   if (!folders.length) {
     const hint = document.createElement('div');
     hint.textContent = 'No projects found';
     hint.style.cssText = 'font-size:10px;opacity:.35;padding:2px 4px;';
     col.appendChild(hint);
   } else {
-    col.appendChild(folderGrid(conn, folders, wsRow, {compact}));
+    col.appendChild(folderGrid(conn, folders, wsRow, {mode: columnMode(folders)}));
   }
   return col;
 }
@@ -645,11 +1156,41 @@ function buildRemoteColumn(groups, wsRow) {
     return col;
   }
   for (const host of hosts) {
-    const sub = document.createElement('div');
-    sub.style.cssText = 'font-size:9px;font-weight:600;opacity:.4;margin:4px 0 1px;padding:0 2px;';
-    sub.textContent = host;
+    // The host name is a button: it opens the file browser at the server's
+    // root. Recorded folders only ever cover places you have already been, and
+    // a server you have never opened in this app would otherwise be a dead
+    // heading. This makes every configured host reachable on day one.
+    const sub = document.createElement('button');
+    sub.type = 'button';
+    sub.title = 'Browse ' + host + ' over ssh';
+    sub.style.cssText = 'display:block;width:100%;text-align:left;border:0;background:transparent;' +
+      'color:inherit;font:inherit;font-size:9px;font-weight:600;opacity:.45;' +
+      'margin:4px 0 1px;padding:0 2px;cursor:pointer;';
+    sub.textContent = host + '  ⤢';
+    sub.onmouseenter = () => { sub.style.opacity = '.8'; };
+    sub.onmouseleave = () => { sub.style.opacity = '.45'; };
+    sub.onclick = e => {
+      e.stopPropagation();
+      pinTodoPreview('/', host);
+      setBrowsing(true);
+    };
     col.appendChild(sub);
-    col.appendChild(folderGrid(host, groups[host], wsRow, {removable: true}));
+    // A configured host we have never seen a folder for. Saying so beats
+    // omitting the host, which reads as "this server doesn't exist".
+    if (!groups[host].length) {
+      const none = document.createElement('div');
+      none.textContent = 'no folders recorded yet';
+      none.style.cssText = 'font-size:9px;opacity:.3;padding:1px 4px 3px;';
+      col.appendChild(none);
+      continue;
+    }
+    // Never emoji mode here - these are server paths with no emoji convention,
+    // so the tile grid would come out empty. `remote:true` is what routes their
+    // previews through the ssh reader instead of the local snapshot.
+    col.appendChild(folderGrid(host, groups[host], wsRow, {
+      removable: true, remote: true,
+      mode: nameMode() === 'emoji' ? 'short' : nameMode(),
+    }));
   }
   return col;
 }
@@ -757,21 +1298,103 @@ function renderMarkdownInto(el, text) {
 // ─────────────────────────────────────────────────────────────
 const WS_MARGIN   = 12;   // keep-out from every viewport edge
 const WS_GAP      = 6;    // gap between the panel and the workspace row
-const WS_TARGET_W = 760;
-const WS_TARGET_H = 330;
-const WS_MIN_H    = 210;  // below this, anchoring above the row isn't worth it
-const WS_PREV_W   = 290;  // TODO preview pane
-const WS_STACK_W  = 470;  // narrower than this, stack the panes instead
+// Target size scales with the window rather than being a fixed 760x330 box. On
+// a maximised window that box used ~40% of the width and showed maybe half the
+// projects and a dozen TODO lines, with the rest behind two scrollbars, for no
+// reason - the space was there. These are still only TARGETS: clampPanel takes
+// the smaller of this and what actually fits, so a small window or a zoomed page
+// behaves exactly as it did.
+const WS_MAX_W    = 1280;
+const WS_MAX_H    = 720;
+const WS_FRAC_W   = 0.72;  // of viewport width
+const WS_FRAC_H   = 0.62;  // of viewport height
+const WS_MIN_H    = 210;   // below this, anchoring above the row isn't worth it
+const WS_PREV_FR  = 0.38;  // preview pane's share of the panel width
+const WS_PREV_MIN = 300;   // ...but never squeezed below this
+const WS_STACK_W  = 560;   // narrower than this, stack the panes instead
+
+const wsTargetW = vw => Math.min(WS_MAX_W, Math.max(760, Math.round(vw * WS_FRAC_W)));
+const wsTargetH = vh => Math.min(WS_MAX_H, Math.max(330, Math.round(vh * WS_FRAC_H)));
 
 const COLLAPSE_KEY = 'cc-ws-collapsed';
 const wsCollapsed = () => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } };
 const setWsCollapsed = v => { try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
 
-let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null;
-let _prevFolder = null;   // which folder the preview is currently showing
+let _prevTitle = null, _prevBody = null, _prevEdit = null, _prevBar = null, _prevSel = null;
+let _prevFolder = null;   // the PROJECT the preview belongs to
+let _prevDir = null;      // the directory being shown - the project, or below it
+let _prevHost = null;     // null for Local, else the SSH connection name
+let _prevFile = 'TODO.md';
+let _browsing = false;    // file-browser view instead of the document view
 let _editing = false;
 let _saveTimer = null;
 let _preEditText = null;  // in-memory undo for the whole editing session
+
+// Pinning. Hovering a project previews it; CLICKING one (which is also how you
+// open it as a workspace) pins the preview to it, and from then on hovering
+// anything else leaves the pane alone.
+//
+// This is what makes the pane usable at all. Reaching it with the mouse means
+// crossing other project rows, and every row crossed used to repaint the pane -
+// so the preview you were trying to read was gone before you got there. The
+// gutter between the columns was widened for the same reason, but a wider gutter
+// only helps the projects at the edge; pinning helps every one of them, and it
+// is the only thing that works in emoji mode where the tiles are packed 3px
+// apart.
+//
+// The pin is released from the "unpin" button in the preview header - deliberately
+// an explicit action, because a pin that clears itself on some subtle condition
+// is just the jitter again with extra steps.
+let _pinFolder = null, _pinHost = null;
+
+const TODO_FILE = 'TODO.md';
+
+// Cache of {ok, text, error, at} per (host, folder, file). Remote reads go over
+// ssh and can take a second, so re-hovering the same tile must not re-run them;
+// failures are cached only briefly so a host that comes back up is retried.
+const _docCache = new Map();
+const _docPending = new Set();
+const DOC_FAIL_TTL = 20000;
+const docKey = (host, folder, file) => (host || '') + '' + folder + '' + file;
+
+function cachedDoc(host, folder, file) {
+  const hit = _docCache.get(docKey(host, folder, file));
+  if (!hit) return null;
+  if (!hit.ok && Date.now() - hit.at > DOC_FAIL_TTL) return null;
+  return hit;
+}
+
+// Resolves to {ok, text, error}. Four sources, in order of cheapness: the cache,
+// the TODO text baked in at patch time, the local-fs bridge, and ssh.
+async function fetchDoc(host, folder, file) {
+  const key = docKey(host, folder, file);
+  const hit = cachedDoc(host, folder, file);
+  if (hit) return hit;
+  if (_docPending.has(key)) return {ok: false, error: 'loading', at: Date.now()};
+  _docPending.add(key);
+  let out;
+  try {
+    if (host) {
+      out = window.ccBridge && window.ccBridge.readRemote
+        ? await window.ccBridge.readRemote(host, folder, file)
+        : {ok: false, error: 'no remote bridge - re-run update-ui.sh'};
+    } else {
+      const baked = file === TODO_FILE ? ccTodo(folder) : undefined;
+      if (baked != null) out = {ok: true, text: baked};
+      else if (window.ccBridge && window.ccBridge.readDoc) {
+        out = await window.ccBridge.readDoc(folder, file);
+      } else out = {ok: false, error: 'no bridge - re-run update-ui.sh'};
+    }
+  } catch (e) {
+    out = {ok: false, error: String((e && e.message) || e)};
+  } finally {
+    _docPending.delete(key);
+  }
+  out = Object.assign({ok: false, text: null, error: 'no response'}, out || {}, {at: Date.now()});
+  _docCache.set(key, out);
+  return out;
+}
+
 
 // Rendered view and edit view are two elements in the same slot, so switching
 // between them can't change the pane's geometry (the whole point of #22).
@@ -779,20 +1402,24 @@ let _preEditText = null;  // in-memory undo for the whole editing session
 // edit/done button to hunt for.
 function setEditing(on) {
   if (!_prevBody) return;
-  const want = !!on && !!_prevFolder;
+  // Remote folders are read-only: the ssh bridge reads, it does not write.
+  // Offering an editor that silently fails to save would be worse than not
+  // offering one.
+  const want = !!on && !!_prevFolder && !_prevHost;
   if (want === _editing) return;
   _editing = want;
   _prevBody.style.display = _editing ? 'none' : '';
   _prevEdit.style.display = _editing ? '' : 'none';
   _prevBar.revertBtn.style.display = _editing ? '' : 'none';
   if (_editing) {
-    _preEditText = ccTodo(_prevFolder) || '';
+    const hit = cachedDoc(null, _prevDir || _prevFolder, _prevFile);
+    _preEditText = (hit && hit.ok && hit.text) || '';
     _prevEdit.value = _preEditText;
     _prevEdit.focus();
   } else {
     // Leaving the editor is a commit point: don't wait out the debounce.
     flushSave();
-    if (_prevFolder) showTodoPreview(_prevFolder);
+    renderPreview();
   }
 }
 
@@ -812,20 +1439,28 @@ function setSaveState(msg, bad) {
   _prevBar.status.style.color = bad ? '#ef4444' : 'inherit';
 }
 
-// Writes through ccBridge.writeTodo -> cc-write-todo ipcMain handler, which is
+// Writes through ccBridge.writeDoc -> cc-write-doc-v2 ipcMain handler, which is
 // the only process with fs access. Debounced: this fires on every keystroke.
-async function doSave(folder, text) {
-  if (!window.ccBridge || typeof window.ccBridge.writeTodo !== 'function') {
+// Falls back to the older TODO-only channel so an app patched by a previous
+// version of update-ui.sh still saves TODO.md rather than reporting "no bridge".
+async function doSave(folder, file, text) {
+  const b = window.ccBridge;
+  const canDoc  = b && typeof b.writeDoc === 'function';
+  const canTodo = b && typeof b.writeTodo === 'function';
+  if (!canDoc && !(canTodo && file === TODO_FILE)) {
     setSaveState('no bridge', true);
     return;
   }
   try {
-    const r = await window.ccBridge.writeTodo(folder, text);
+    const r = canDoc ? await b.writeDoc(folder, file, text) : await b.writeTodo(folder, text);
     if (r && r.ok) {
-      // Keep the in-memory copy in step so hovering away and back, or
+      // Keep the in-memory copies in step so hovering away and back, or
       // re-rendering the panel, doesn't resurrect the pre-edit text.
-      if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
-      window.__CC_TODOS__[folder] = text;
+      _docCache.set(docKey(null, folder, file), {ok: true, text, at: Date.now()});
+      if (file === TODO_FILE) {
+        if (typeof window.__CC_TODOS__ !== 'object' || !window.__CC_TODOS__) window.__CC_TODOS__ = {};
+        window.__CC_TODOS__[folder] = text;
+      }
       setSaveState('saved');
       setTimeout(() => { if (_prevBar && _prevBar.status.textContent === 'saved') setSaveState(''); }, 1500);
     } else {
@@ -833,16 +1468,16 @@ async function doSave(folder, text) {
     }
   } catch (e) {
     setSaveState('save failed', true);
-    console.error('[cc-ws] writeTodo', e);
+    console.error('[cc-ws] writeDoc', e);
   }
 }
 
 function saveTodoSoon() {
-  if (!_prevFolder) return;
-  const folder = _prevFolder, text = _prevEdit.value;
+  if (!_prevFolder || _prevHost) return;
+  const folder = _prevDir || _prevFolder, file = _prevFile, text = _prevEdit.value;
   setSaveState('…');
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => doSave(folder, text), 600);
+  _saveTimer = setTimeout(() => doSave(folder, file, text), 600);
 }
 
 // Write now rather than in 600ms. Called when the editor closes and on unload,
@@ -851,27 +1486,223 @@ function flushSave() {
   if (!_saveTimer || !_prevFolder || !_prevEdit) return;
   clearTimeout(_saveTimer);
   _saveTimer = null;
-  doSave(_prevFolder, _prevEdit.value);
+  doSave(_prevDir || _prevFolder, _prevFile, _prevEdit.value);
 }
 
-function showTodoPreview(folder) {
+// ── preview pane ────────────────────────────────────────────────────────────
+
+const isPinned = () => !!_pinFolder;
+const pinnedHere = () => _pinFolder === _prevFolder && _pinHost === _prevHost;
+
+function pinTodoPreview(folder, host) {
+  _pinFolder = folder;
+  _pinHost = host || null;
+  showTodoPreview(folder, {host, force: true});
+}
+
+function unpinTodoPreview() {
+  _pinFolder = _pinHost = null;
+  renderPreview();
+}
+
+// Every repaint is tagged, so a slow ssh read that lands after the user has
+// moved on can't overwrite the pane with the previous folder's file.
+let _renderSeq = 0;
+
+function showTodoPreview(folder, opts = {}) {
   if (!_prevTitle || !_prevBody) return;
+  const host = opts.host || null;
   // Don't yank the pane out from under an in-progress edit just because the
   // pointer crossed another project on its way to the textarea.
   if (_editing && folder !== _prevFolder) return;
+  // Pinned to something else: hovering does nothing.
+  if (!opts.force && isPinned() && (folder !== _pinFolder || host !== _pinHost)) return;
+  const changed = folder !== _prevFolder || host !== _prevHost;
   _prevFolder = folder;
+  _prevHost = host;
+  if (changed) { _prevFile = TODO_FILE; _prevDir = folder; _browsing = false; }
+  renderPreview();
+  if (changed) refreshFileList();
+}
+
+function paintDoc(seq, file, r) {
+  if (seq !== _renderSeq) return;
+  if (r && r.ok && r.text) renderMarkdownInto(_prevBody, r.text);
+  else if (r && r.ok) _prevBody.textContent = file + ' is empty.';
+  else if (r && r.error === 'loading') _prevBody.textContent = 'Reading ' + file + '…';
+  else _prevBody.textContent = 'No ' + file + ' here' +
+    (r && r.error ? ' (' + String(r.error).slice(0, 120) + ')' : '') + '.';
+}
+
+// ── file browser ────────────────────────────────────────────────────────────
+//
+// The app has a perfectly good file panel on ctrl+shift+F, and it is unavailable
+// on exactly the page where you are choosing what to work on - it only exists
+// once a session has started. Since the panel already knows which project you
+// mean and already has a pane, it can answer the same question here.
+//
+// Reuses the preview pane rather than adding a third column: browsing and
+// reading are the same activity, and the pane is already the right shape for it.
+// ctrl+shift+F toggles it, but only when our panel is on screen - inside a chat
+// the app's own shortcut is the better one and is left alone.
+
+const TEXTY = /\.(md|txt|markdown|text)$/i;
+
+function setBrowsing(on) {
+  if (!_prevFolder) return;
+  setEditing(false);
+  _browsing = !!on;
+  if (_browsing) _prevDir = _prevDir || _prevFolder;
+  renderPreview();
+}
+
+// Never above the project itself: the browser is for looking inside a project,
+// not for wandering the filesystem.
+const parentDir = d => {
+  const up = d.split('/').slice(0, -1).join('/');
+  return up.length >= _prevFolder.length ? up : null;
+};
+
+function browseRow(label, icon, dim, onClick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.style.cssText = 'display:flex;align-items:center;gap:6px;width:100%;text-align:left;' +
+    'border:0;background:transparent;color:inherit;font:inherit;font-size:11px;' +
+    'padding:2px 4px;border-radius:4px;' + (dim ? 'opacity:.45;' : 'cursor:pointer;');
+  const i = document.createElement('span');
+  i.textContent = icon;
+  i.style.cssText = 'flex:none;opacity:.75;';
+  const t = document.createElement('span');
+  t.textContent = label;
+  t.style.cssText = 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  b.appendChild(i);
+  b.appendChild(t);
+  if (!dim) {
+    b.onmouseenter = () => { b.style.background = 'var(--bg-200,rgba(128,128,128,.15))'; };
+    b.onmouseleave = () => { b.style.background = 'transparent'; };
+    b.onclick = e => { e.stopPropagation(); onClick(); };
+  }
+  return b;
+}
+
+function renderBrowse() {
+  const dir = _prevDir, host = _prevHost;
+  const seq = ++_renderSeq;
+  _prevBody.textContent = 'Reading…';
+  const p = host
+    ? (window.ccBridge && window.ccBridge.listTreeRemote
+        ? window.ccBridge.listTreeRemote(host, dir) : Promise.resolve(null))
+    : (window.ccBridge && window.ccBridge.listTree
+        ? window.ccBridge.listTree(dir, '') : Promise.resolve(null));
+  Promise.resolve(p).then(r => {
+    if (seq !== _renderSeq) return;
+    _prevBody.textContent = '';
+    if (!r || !r.ok) {
+      _prevBody.textContent = 'Could not read this folder' +
+        (r && r.error ? ' (' + String(r.error).slice(0, 120) + ')' : '') + '.';
+      return;
+    }
+    const up = parentDir(dir);
+    if (up) _prevBody.appendChild(browseRow('..', '↰', false, () => {
+      _prevDir = up; renderPreview();
+    }));
+    for (const e of r.entries) {
+      if (e.dir) {
+        _prevBody.appendChild(browseRow(e.name, '📁', false, () => {
+          _prevDir = (dir.endsWith('/') ? dir : dir + '/') + e.name;
+          renderPreview();
+        }));
+      } else if (TEXTY.test(e.name)) {
+        _prevBody.appendChild(browseRow(e.name, '📄', false, () => {
+          _prevFile = e.name; _browsing = false; renderPreview(); refreshFileList();
+        }));
+      } else {
+        // Shown but not openable - the pane renders markdown, not binaries, and
+        // a listing with holes in it is worse than one with greyed-out rows.
+        _prevBody.appendChild(browseRow(e.name, '·', true, null));
+      }
+    }
+    if (!r.entries.length) _prevBody.textContent = 'This folder is empty.';
+  }).catch(() => {
+    if (seq === _renderSeq) _prevBody.textContent = 'Could not read this folder.';
+  });
+}
+
+function renderPreview() {
+  if (!_prevTitle || !_prevBody) return;
+  const folder = _prevFolder, host = _prevHost, file = _prevFile;
+  if (!folder) {
+    _prevTitle.textContent = 'TODO.md';
+    _prevBody.textContent = 'Hover a project to preview its TODO.md. Click one to keep it here.';
+    if (_prevBar) {
+      _prevBar.openBtn.style.display = 'none';
+      _prevBar.pinBtn.style.display = 'none';
+    }
+    if (_prevSel) _prevSel.style.display = 'none';
+    return;
+  }
+  const dir = _prevDir || folder;
   const name = emojiSuffix(folder.split('/').filter(Boolean).pop() || folder);
-  const text = ccTodo(folder);
-  _prevTitle.textContent = name + ' - TODO.md';
+  // Remote entries are server paths, so the path IS the useful label. Local ones
+  // are named projects, so show the name plus however far below it we are.
+  const sub = (!host && dir.length > folder.length) ? ' / ' + dir.slice(folder.length + 1) : '';
+  _prevTitle.textContent = (pinnedHere() ? '📌 ' : '') +
+    (host ? host + ' · ' + dir : name + sub);
+  _prevTitle.title = (host ? host + ':' : '') + dir;
   // The pane keeps its scroll offset between projects; without this a long
   // previous TODO leaves the next one already scrolled past its own heading.
   _prevBody.scrollTop = 0;
-  if (text) renderMarkdownInto(_prevBody, text);
-  else _prevBody.textContent = 'No TODO.md in this folder.';
+  _prevBody.style.cursor = (host || _browsing) ? 'default' : 'text';
+  _prevBody.title = _browsing ? 'Click a folder to open it, a file to read it'
+    : host ? 'Remote folder - read only'
+    : 'Click to edit. Click anywhere else to go back to reading.';
   if (_prevBar) {
-    _prevBar.openBtn.style.display = '';
+    _prevBar.openBtn.style.display = host ? 'none' : '';
+    _prevBar.pinBtn.style.display = isPinned() ? '' : 'none';
+    _prevBar.filesBtn.style.display = '';
+    _prevBar.filesBtn.textContent = _browsing ? 'read' : 'files';
+    _prevBar.filesBtn.title = _browsing
+      ? 'Back to reading the file'
+      : 'Browse this project’s files and folders (ctrl+shift+F)';
     setSaveState('');
   }
+  if (_prevSel) _prevSel.style.display = _browsing ? 'none' : _prevSel.style.display;
+
+  if (_browsing) { renderBrowse(); return; }
+
+  const seq = ++_renderSeq;
+  const hit = cachedDoc(host, dir, file);
+  if (hit) { paintDoc(seq, file, hit); return; }
+  _prevBody.textContent = 'Reading ' + file + '…';
+  fetchDoc(host, dir, file).then(r => paintDoc(seq, file, r));
+}
+
+// Which files this folder offers. TODO.md is always the first option even when
+// the listing fails, so the dropdown never comes back empty.
+async function refreshFileList() {
+  if (!_prevSel) return;
+  const folder = _prevFolder, host = _prevHost, dir = _prevDir || _prevFolder;
+  let files = [TODO_FILE];
+  try {
+    const b = window.ccBridge;
+    const r = host
+      ? (b && b.listRemote ? await b.listRemote(host, dir) : null)
+      : (b && b.listDocs ? await b.listDocs(dir) : null);
+    if (r && r.ok && Array.isArray(r.files) && r.files.length) files = r.files;
+  } catch (_) {}
+  // The user may have moved on while the listing was in flight.
+  if (folder !== _prevFolder || host !== _prevHost || dir !== (_prevDir || _prevFolder)) return;
+  if (!files.includes(TODO_FILE)) files.unshift(TODO_FILE);
+  _prevSel.textContent = '';
+  for (const f of files) {
+    const o = document.createElement('option');
+    o.value = f;
+    o.textContent = f;
+    _prevSel.appendChild(o);
+  }
+  if (!files.includes(_prevFile)) _prevFile = files[0];
+  _prevSel.value = _prevFile;
+  _prevSel.style.display = files.length > 1 ? '' : 'none';
 }
 
 // Builds the static chrome once. rebuildPanel() only ever refills `list`, so
@@ -887,19 +1718,29 @@ function buildShell(panel) {
   htitle.style.cssText = 'flex:1;min-width:0;';
   head.appendChild(htitle);
 
-  const toggle = document.createElement('label');
-  toggle.style.cssText = 'display:flex;align-items:center;gap:4px;flex:none;cursor:pointer;' +
+  // Emoji / Short / Full, as real radios - one group, one visible choice, no
+  // guessing what a checkbox that says "emoji only" does when it's off.
+  const modes = document.createElement('div');
+  modes.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none;' +
     'font-size:9px;font-weight:600;opacity:.75;text-transform:none;letter-spacing:0;';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = emojiOnly();
-  cb.style.cssText = 'margin:0;cursor:pointer;';
-  cb.onclick = e => e.stopPropagation();
-  cb.onchange = () => { setEmojiOnly(cb.checked); rebuildPanel(); };
-  toggle.appendChild(cb);
-  toggle.appendChild(document.createTextNode('emoji only'));
-  toggle.onclick = e => e.stopPropagation();
-  head.appendChild(toggle);
+  const current = nameMode();
+  for (const m of NAME_MODES) {
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:flex;align-items:center;gap:3px;cursor:pointer;';
+    const rb = document.createElement('input');
+    rb.type = 'radio';
+    rb.name = 'cc-ws-name-mode';
+    rb.value = m;
+    rb.checked = m === current;
+    rb.style.cssText = 'margin:0;cursor:pointer;';
+    rb.onclick = e => e.stopPropagation();
+    rb.onchange = () => { if (rb.checked) { setNameMode(m); rebuildPanel(); } };
+    lab.appendChild(rb);
+    lab.appendChild(document.createTextNode(m));
+    lab.onclick = e => e.stopPropagation();
+    modes.appendChild(lab);
+  }
+  head.appendChild(modes);
 
   // Collapse exists for the zoomed-in case: at 150%+ the panel legitimately
   // covers most of the window, and you want it out of the way between uses.
@@ -948,9 +1789,35 @@ function buildShell(panel) {
     return b;
   };
 
+  // Which file the pane is showing. Hidden when a folder only has TODO.md, so
+  // the common case looks exactly like it did before.
+  const psel = document.createElement('select');
+  psel.style.cssText = 'flex:none;max-width:130px;border:0;background:transparent;color:inherit;' +
+    'font:inherit;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;' +
+    'opacity:.75;cursor:pointer;padding:0;display:none;';
+  psel.title = 'Which file to show from this folder';
+  psel.onclick = e => e.stopPropagation();
+  psel.onchange = e => {
+    e.stopPropagation();
+    setEditing(false);
+    _prevFile = psel.value;
+    renderPreview();
+  };
+  _prevSel = psel;
+
   const revertBtn = mkAction('revert', 'Put the text back to how it was when you started editing');
   revertBtn.style.display = 'none';
   revertBtn.onclick = e => { e.stopPropagation(); revertEdit(); };
+
+  // Visible only while something is pinned - there is nothing to clear otherwise,
+  // and a permanently-present button that usually does nothing reads as broken.
+  const pinBtn = mkAction('unpin', 'Stop holding this project - go back to previewing whatever you hover');
+  pinBtn.style.display = 'none';
+  pinBtn.onclick = e => { e.stopPropagation(); unpinTodoPreview(); };
+
+  const filesBtn = mkAction('files', 'Browse this project’s files and folders (ctrl+shift+F)');
+  filesBtn.style.display = 'none';
+  filesBtn.onclick = e => { e.stopPropagation(); setBrowsing(!_browsing); };
   // The one-click "open the folder" the panel was missing: ccBridge.openFolder
   // already existed for this, wired to shell.openPath in the main process.
   const openBtn = mkAction('open', 'Open this folder in the file manager');
@@ -960,15 +1827,20 @@ function buildShell(panel) {
   };
 
   phead.appendChild(ptitle);
+  phead.appendChild(psel);
   phead.appendChild(pstatus);
   phead.appendChild(revertBtn);
+  phead.appendChild(filesBtn);
+  phead.appendChild(pinBtn);
   phead.appendChild(openBtn);
 
   const pbody = document.createElement('div');
   pbody.style.cssText = 'flex:1;min-height:0;overflow:auto;font-size:11px;line-height:1.4;' +
     'word-break:break-word;opacity:.85;font-family:inherit;cursor:text;';
   pbody.title = 'Click to edit. Click anywhere else to go back to reading.';
-  pbody.onclick = e => { e.stopPropagation(); setEditing(true); };
+  // In browse mode the pane is a list of buttons, and a click on the padding
+  // between them must not drop into the editor.
+  pbody.onclick = e => { e.stopPropagation(); if (!_browsing) setEditing(true); };
 
   const pedit = document.createElement('textarea');
   pedit.spellcheck = false;
@@ -991,7 +1863,7 @@ function buildShell(panel) {
   prev.appendChild(pbody);
   prev.appendChild(pedit);
   _prevEdit = pedit;
-  _prevBar = {wrap: phead, status: pstatus, revertBtn, openBtn};
+  _prevBar = {wrap: phead, status: pstatus, revertBtn, openBtn, pinBtn, filesBtn, sel: psel};
   installEditExitListeners();
   body.appendChild(list);
   body.appendChild(prev);
@@ -1019,6 +1891,17 @@ function installEditExitListeners() {
     if (_prevBar && _prevBar.wrap.contains(t)) return;
     setEditing(false);
   }, true);
+  // ctrl+shift+F opens the panel's file browser - but ONLY when the panel is on
+  // screen, which is only ever the new-session page. Inside a chat the app's own
+  // file panel is the better one and this must not shadow it.
+  document.addEventListener('keydown', e => {
+    if (!e.ctrlKey || !e.shiftKey || e.altKey) return;
+    if ((e.key || '').toLowerCase() !== 'f') return;
+    if (!document.querySelector('.' + PANEL_CLS) || !_prevFolder) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setBrowsing(!_browsing);
+  }, true);
   // Quitting or navigating away must not drop an un-flushed keystroke.
   window.addEventListener('beforeunload', flushSave);
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
@@ -1039,31 +1922,47 @@ function rebuildPanel() {
   const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
     : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
     : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
-  // Every non-Local connection we've ever recorded, grouped by host name -
-  // no longer hardcoded to "Myserver".
+  // Every non-Local connection, grouped by host name, from three sources: what
+  // we recorded ourselves (cc-ws-v4), what the APP recorded
+  // (desktop-recent-workspaces), and the configured SSH hosts - the last so a
+  // server with nothing recorded yet is still visible instead of silently
+  // absent, which is what "I'm not seeing projects from my other servers"
+  // looked like.
   const remote = {};
-  for (const {conn, folder} of ws) {
-    if (!conn || conn === 'Local') continue;
+  for (const name of (_sshHosts || [])) remote[name] ||= [];
+  for (const {conn, folder} of [...ws, ...appRecentWorkspaces()]) {
+    if (!conn || conn === 'Local' || !folder) continue;
+    // A local path recorded against a connection name is still a local path.
+    if (folder.startsWith(HOME_HINT)) continue;
     (remote[conn] ||= []);
     if (!remote[conn].includes(folder)) remote[conn].push(folder);
   }
+  loadSshHosts();
 
   const list = panel._els.list;
   list.textContent = '';
   const cols = document.createElement('div');
-  cols.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
-  cols.appendChild(buildColumn('Local', L, panel._wsRow));
-  cols.appendChild(buildRemoteColumn(remote, panel._wsRow));
+  // 22px, and a hairline rule down the middle. The columns used to be 8px
+  // apart, which is not a gutter - it's a seam. Crossing from a project in the
+  // Local column to the preview pane meant clipping rows in the Remote column on
+  // the way, and each one repainted the preview. Pinning is the real fix; this
+  // is so the pointer has somewhere to be that isn't a project.
+  cols.style.cssText = 'display:flex;gap:22px;align-items:stretch;';
+  const localCol = buildColumn('Local', L, panel._wsRow);
+  const remoteCol = buildRemoteColumn(remote, panel._wsRow);
+  remoteCol.style.borderLeft = '1px solid var(--claude-border,rgba(128,128,128,.18))';
+  remoteCol.style.paddingLeft = '18px';
+  cols.appendChild(localCol);
+  cols.appendChild(remoteCol);
   list.appendChild(cols);
 
-  const seed = _prevFolder || L.find(f => ccTodo(f));
-  if (seed) showTodoPreview(seed);
+  // A pinned project outranks everything: rebuilding the list (a rename, a new
+  // recorded remote) must not quietly drop what the user is reading.
+  if (_pinFolder) showTodoPreview(_pinFolder, {host: _pinHost, force: true});
   else {
-    _prevFolder = null;
-    _prevTitle.textContent = 'TODO.md';
-    _prevBody.textContent = 'Hover a project to preview its TODO.md';
-    // Nothing to edit or open yet, so don't offer to.
-    if (_prevBar) _prevBar.openBtn.style.display = 'none';
+    const seed = _prevFolder || L.find(f => ccTodo(f));
+    if (seed) showTodoPreview(seed, {host: _prevFolder === seed ? _prevHost : null});
+    else { _prevFolder = null; _prevHost = null; renderPreview(); }
   }
 
   clampPanel(panel);
@@ -1105,7 +2004,20 @@ function installPanel(wsRow) {
   // the default content-box the 12px padding and 1px border land OUTSIDE the
   // computed size, so the box quietly renders 26px wider than the viewport fit
   // it was just given.
-  panel.style.cssText = 'box-sizing:border-box;position:fixed;z-index:2147482000;display:flex;flex-direction:column;' +
+  //
+  // z-index 30, NOT the old 2147482000. The panel has to paint over the page's
+  // own content (the composer, the new-session overview) and must NOT paint over
+  // the app's dialogs and menus - and those are two different jobs for two
+  // different numbers, not one number that has to be both. claude.ai's overlays
+  // are Radix portals in the z-40/z-50 band; ordinary page content is z-auto. A
+  // value between the two lands exactly where it should, and it degrades
+  // gracefully: an overlay we've never seen still wins simply by being a portal
+  // with a real z-index.
+  //
+  // The first attempt at this hid the panel whenever an overlay was open, which
+  // worked but was the wrong behaviour - a panel that vanishes is harder to
+  // reason about than one that is simply behind something.
+  panel.style.cssText = 'box-sizing:border-box;position:fixed;z-index:30;display:flex;flex-direction:column;' +
     'background:#f2e8d5;' +
     'border:1px solid var(--claude-border,rgba(128,128,128,.22));' +
     'border-radius:8px;padding:10px 12px;' +
@@ -1145,11 +2057,16 @@ function clampPanel(panel) {
 
   const rr = row.getBoundingClientRect();
   const vw = window.innerWidth, vh = window.innerHeight;
-  const w = Math.max(240, Math.min(WS_TARGET_W, vw - 2 * WS_MARGIN));
 
-  let left = Math.round(rr.left);
-  if (left + w > vw - WS_MARGIN) left = vw - WS_MARGIN - w;
-  if (left < WS_MARGIN) left = WS_MARGIN;
+  // Never start left of the workspace row. The row lives in the main content
+  // column, so its left edge is a reliable stand-in for where the sidebar ends -
+  // and the old code did the opposite: when the target width didn't fit it slid
+  // the panel LEFT (`left = vw - WS_MARGIN - w`), straight over the session
+  // list. On a narrow window that is guaranteed, which is exactly when it was
+  // reported. Shrink to fit instead of sliding.
+  const minLeft = Math.max(WS_MARGIN, Math.round(rr.left));
+  const left = minLeft;
+  const w = Math.max(240, Math.min(wsTargetW(vw), vw - WS_MARGIN - left));
 
   panel.style.width = w + 'px';
   panel.style.left = left + 'px';
@@ -1165,15 +2082,16 @@ function clampPanel(panel) {
   }
 
   const above = Math.round(rr.top) - WS_GAP - WS_MARGIN;
+  const targetH = wsTargetH(vh);
   let h, top;
   if (above >= WS_MIN_H) {
-    h = Math.min(WS_TARGET_H, above);
+    h = Math.min(targetH, above);
     top = Math.round(rr.top) - WS_GAP - h;
   } else {
     // Not enough headroom - browser zoom, or a short window. Squeezing into a
     // 60px sliver is what made it useless; anchor to the viewport and accept
     // overlapping the row. The collapse chevron is the way out.
-    h = Math.min(WS_TARGET_H, vh - 2 * WS_MARGIN);
+    h = Math.min(targetH, vh - 2 * WS_MARGIN);
     top = WS_MARGIN;
   }
   panel.style.height = h + 'px';
@@ -1185,7 +2103,10 @@ function clampPanel(panel) {
   const {body, list, prev} = panel._els;
   if (w >= WS_STACK_W) {
     body.style.flexDirection = 'row';
-    prev.style.width = WS_PREV_W + 'px';
+    // The preview grows with the panel instead of staying a fixed 290px sliver -
+    // the whole point of a bigger panel is more TODO on screen, not just more
+    // project rows.
+    prev.style.width = Math.max(WS_PREV_MIN, Math.round(w * WS_PREV_FR)) + 'px';
     prev.style.height = '';
     prev.style.borderLeft = '1px solid var(--claude-border,rgba(128,128,128,.22))';
     prev.style.borderTop = '';
