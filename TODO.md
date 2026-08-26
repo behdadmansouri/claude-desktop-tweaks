@@ -57,7 +57,11 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       "Playing audio" - no Capturing entry. So it is a Chromium **media-capture** inhibitor tied
       to an open mic/camera/screen-capture stream, most likely dictation, and it releases when the
       stream does. Next time it shows up, run `claude-ctl` and note what else is holding one.
-      Nothing to fix unless it is still held with no capture running.
+      Nothing to fix unless it is still held with no capture running. Partial confirmation
+      2026-08-26: the renderer log carries `ScriptProcessorNode is deprecated` at 00:31 and
+      00:33, i.e. an audio-capture graph was live at exactly the moment the panel showed a
+      second inhibitor. That is dictation. Still want one sighting where `claude-ctl` and the
+      log are read together.
 
 ## 🤔 Needs your call
 
