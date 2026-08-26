@@ -42,4 +42,4 @@ worth resurrecting speculatively.
 
 | Feature | Notes |
 |---------|-------|
-| **Workspace "New Project on SSH"** | Requires main-process IPC to create remote directory (out of scope) |
+| **Workspace "New Project on SSH"** | Requires main-process IPC to create remote directory. Confirmed **not planned** 2026-08-26 - not worth the scope, do not re-propose |

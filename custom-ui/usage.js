@@ -571,23 +571,60 @@ function cuInjectCSS() {
 }
 
 let cuRoot = null, cuChipEl = null, cuCardEl = null, cuNative = null;
+// The button whose icon we collapsed, so it can be put back if the match moves.
+let cuCollapsed = null;
+
+function cuUncollapse(el) {
+  if (!el) return;
+  for (const svg of el.querySelectorAll(':scope > svg, :scope > span > svg')) {
+    svg.style.display = '';
+  }
+  el.style.width = '';
+  el.style.padding = '';
+  el.style.overflow = '';
+  if (cuCollapsed === el) cuCollapsed = null;
+}
 
 // The app's own usage control - the little circular tracker next to the model
 // name in the composer footer. Found by aria-label, never by class name or
 // position, and guarded to icon-button dimensions so a redesign that reuses the
 // word "usage" on a big container can't get its icon hidden (issues-fixed #18).
+//
+// The label test is a WORD match, not a substring one (issues-fixed #46).
+// `[aria-label*="plan" i]` also matched "More options for Fable project
+// critique and planning" - the 20x20 overflow button on a session row, which
+// passed every geometric guard, so the chip was inserted into that row and
+// painted across the session title. A substring of a word is not a match.
+//
+// And matching is not enough on its own: several buttons can pass, so they are
+// scored and the best one wins rather than the first one in document order.
+const CU_NATIVE_RE =
+  /\busage\b|\b(?:usage|plan|rate|weekly|5-?hour|context)\s+limits?\b|\bplan\s+usage\b/i;
+// Anything that announces itself as a control FOR something else is not it.
+const CU_NATIVE_NOT_RE = /more options|options for|menu for|settings for/i;
+
 function cuFindNative() {
   if (cuNative && cuNative.isConnected) return cuNative;
   cuNative = null;
+  // Cheap attribute prefilter, then the real (word-boundary) test.
   const cands = document.querySelectorAll(
-    'button[aria-label*="usage" i],button[aria-label*="Usage" i],' +
-    'button[aria-label*="limit" i],button[aria-label*="plan" i]');
+    'button[aria-label*="usage" i],button[aria-label*="limit" i],' +
+    'button[aria-label*="plan" i]');
+  let best = null, bestScore = -1;
   for (const b of cands) {
+    const label = b.getAttribute('aria-label') || '';
+    if (!CU_NATIVE_RE.test(label) || CU_NATIVE_NOT_RE.test(label)) continue;
     const r = b.getBoundingClientRect();
     if (r.width === 0 || r.width > 90 || r.height > 60) continue;
-    cuNative = b;
-    break;
+    // A control inside a list row belongs to that row, whatever it is called.
+    if (b.closest('[role="listitem"],[role="row"],[role="option"],li,a[href]')) continue;
+    // The real one leads with "Usage", carries live percentages, and sits in
+    // the composer footer at the bottom of the window.
+    const score = (/^usage\b/i.test(label) ? 2 : 0) + (/%|\bcontext\b/i.test(label) ? 2 : 0) +
+      (r.top > window.innerHeight * 0.5 ? 1 : 0);
+    if (score > bestScore) { best = b; bestScore = score; }
   }
+  cuNative = best;
   return cuNative;
 }
 
@@ -614,14 +651,21 @@ function cuPlace() {
     cuChipEl.classList.add('attached');
     // Collapse only the icon, never the button: the button stays in the DOM and
     // stays clickable, which is what keeps the native popover reachable.
+    //
+    // Whatever was collapsed last is restored first. Before #46 the match could
+    // land on an unrelated row control, and a mis-collapsed button stayed
+    // 0px wide until React happened to remount it.
+    if (cuCollapsed && cuCollapsed !== native) cuUncollapse(cuCollapsed);
     for (const svg of native.querySelectorAll(':scope > svg, :scope > span > svg')) {
       svg.style.display = 'none';
     }
     native.style.width = '0px';
     native.style.padding = '0px';
     native.style.overflow = 'hidden';
+    cuCollapsed = native;
     return true;
   }
+  if (cuCollapsed) cuUncollapse(cuCollapsed);
   if (cuRoot.parentElement !== document.body) document.body.appendChild(cuRoot);
   cuRoot.style.position = '';
   cuRoot.style.pointerEvents = '';

@@ -6,6 +6,23 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## ⚡ Next up
 
+- [ ] **Merge the stranded untrack commit before any push** `S` - `main` is 19 commits ahead of
+      the public GitHub remote and still tracks `index.js` + `index.chunk-BOXWZA6T.js` (18.6 MB
+      of extracted Anthropic bundles). Commit `86d1ddc` already untracks them with the right
+      ignore globs but is stranded in the stale worktree
+      `.claude/worktrees/blissful-noether-bd840c`. Cherry-pick it onto main, then
+      `git worktree remove` the worktree and delete branch `claude/blissful-noether-bd840c`.
+      Do NOT push before this lands. Details: [docs/review-2026-08.md](docs/review-2026-08.md) 🤖
+
+- [ ] **Commit the in-flight #46 work** `S` - `custom-ui/usage.js` + `custom-ui/workspace.js`
+      sit modified and uncommitted (aria-label word-match fix, collapse/uncollapse). Finish or
+      commit as-is so the tree is clean. 🤖
+
+- [ ] **Rewrite the `update-claude-desktop` skill** `S` - `~/.claude/skills/update-claude-desktop/SKILL.md`
+      (frozen 2026-07-24) still drives `update-appimage.sh`, dead since the AUR removal, and
+      knows nothing of `claude-ctl`, `--official`, or the autoupdate timer. A cold agent
+      following it fails at step 1. Rewrite after (or alongside) the base decision below. 🤖
+
 - [ ] **The patched build has no update path** `L` `think` - `claude-desktop-appimage` was
       removed from the AUR (2026-08-14), so `scripts/update-appimage.sh` fails at step 1. The
       installed build is 1.24012.9; Anthropic's official app is already 1.26832.0 and AUR
@@ -19,21 +36,21 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       payload that carries a token count. Do **not** re-add a timer that opens the popover
       ([issues-fixed.md](memory/issues-fixed.md) #13).
 
-- [ ] **Duplicate "close right bar" buttons in Cowork** `M` - two floating close buttons appear
-      at once. Needs live DOM inspection (devtools or a screenshot) before any fix; no blind
-      selector guess, given how fragile the hiders have been ([issues-fixed.md](memory/issues-fixed.md) #18).
+- [ ] **Kill the dead band above the tab pills** `S` - the native KWin frame is confirmed working,
+      and the app still reserves ~45px above the "Chat and Cowork" / "Code" pills plus an empty
+      32px `.epitaxy-titlebar` drag strip to their right. Decided 2026-08-26: keep the pills,
+      reclaim the empty space. Blocked on measurement, not on the decision - `diag.js` now dumps
+      `topChain` (ancestor padding/height walked up from a pill, plus `elementFromPoint` at three
+      heights inside the band). Read it out of the next `[cc-dump]` line after a restart and
+      write a CSS override against the computed value, never a guessed class
+      ([issues-fixed.md](memory/issues-fixed.md) #18). `chrome.js`'s whole-bar hider is the wrong
+      tool here: it would take the tab pills with it.
 
-- [ ] **Full-width chat column** `S` - the transcript is capped to a readable measure; user wants
-      it to use the whole window. Blocked on knowing *what* caps it: read `widthChain` out of the
-      next `[cc-dump]` line (see [debugging.md](memory/debugging.md)) and write a CSS override
-      against the computed `max-width`, not against a guessed Tailwind class.
-
-- [ ] **Confirm the native window frame after restart** `S` - the main window now asks for
-      `titleBarStyle:"default"` on Linux, so KWin should draw a real titlebar. Unknown until a
-      restart: whether the app *also* still draws its own close/maximize row in HTML. If it does,
-      measure it with the `[cc-dump]` beacon before touching a selector - a blind guess at the top
-      bar is what blanked the page in July ([issues-fixed.md](memory/issues-fixed.md) #18). Revert
-      is one hunk in `update-ui.sh` (search `__ccNativeFrame`).
+- [ ] **Verify the usage chip lands in the composer footer** `S` - the mis-attach is fixed and
+      deployed ([issues-fixed.md](memory/issues-fixed.md) #46) but unseen: it was matching a
+      session row's "More options for ... and pla**nning**" button. After a restart the chip
+      should sit inline next to Opus 5 / Medium with the app's own ring collapsed, and no session
+      row should have text painted over it. `window.__ccUsage().attachedTo` names the match.
 
 - [ ] **Catch the "Capturing" inhibitor in the act** `S` - it is **not** permanent. A live check
       (`claude-ctl` prints the list) found only the Electron `powerSaveBlocker` and Chromium
@@ -42,18 +59,7 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       stream does. Next time it shows up, run `claude-ctl` and note what else is holding one.
       Nothing to fix unless it is still held with no capture running.
 
-- [ ] **Verify the keep-awake governor over a real idle night** `S` - `claude-ctl` reports the last
-      state; raw lines are `[cc-keep-awake]` in `~/.config/Claude/logs/main.log`. Expect `working` while sessions run and `idle` within ~30
-      min of stopping, plus a matching `[keep-awake] stopped`. If it flips to `idle` mid-run,
-      raise the window: `CC_KEEPAWAKE_IDLE_MIN=60`.
-
 ## 🤔 Needs your call
-
-- [ ] **Confirm the top bar hider picked the right element** `S` - decided and shipped
-      2026-08-18 (`custom-ui/chrome.js`), but the match was never seen against the live DOM. After
-      a restart check `[cc-chrome]` in the renderer log: "top bar hidden (Npx reclaimed)" is good,
-      "hide reverted" means the geometry match needs tightening against the `[cc-dump]` topBar
-      array. Window drag/close now depend on the KDE titlebar and Ctrl+Q.
 
 - [ ] **KDE titlebar no longer hidden** `S` - a manual System Settings step, not a code change.
       Window Management → Window Rules → Add → focus Claude Desktop → "Detect Window Properties"
@@ -63,11 +69,23 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       the old class silently stopped matching. No `~/.config/kwinrulesrc` exists on this system
       at all, so a rule likely was never saved in the first place.
 
-- [ ] **Effort selector disappears too quickly** `S` - native app behavior, not ours. Decide
-      whether it's worth a custom-ui hover-persistence patch or just lived with. Reported
-      2026-06-26.
-
 ## 📋 Backlog
+
+- [ ] **Make a failed `--official` re-patch loud** `S` - `claude-ctl update` runs
+      `update-ui.sh --official || true`, so when the timer installs a new official build and the
+      patch RuntimeErrors (the eipc marker is already known missing there), the build silently
+      runs unpatched. Surface the failure: nonzero exit, a line in the check-updates status, or a
+      desktop notification. 🤖
+
+- [ ] **Rename `CLAUDE.md` to `AGENTS.md`** `S` - codex compliance ("reverse any you find").
+      Needs a grep pass, not just `git mv`: the skill, `memory/*.md`, and scripts reference the
+      name. 🤖
+
+- [ ] **Memory hygiene pass** `S` - `project_claude_desktop_gpu_crash.md` still prescribes
+      `CLAUDE_DISABLE_GPU=1`, which maintenance.md says was removed; `MEMORY.md` says issues
+      "#1-40" vs actual #47; no `USAGE.md` despite `claude-ctl`/timer being operable tooling.
+      Done 2026-08-26: `memory/changelog.md` created, CLAUDE.md registry corrected, flat-memory
+      exception documented. 🤖
 
 - [x] **Bring `titlewatch.js` to the official app, or don't** `M` - done 2026-08-25, and the whole
       custom UI came with it rather than titlewatch alone. `update-ui.sh --official` patches
@@ -83,5 +101,5 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       builds at once against it.
 
 ## Draft
-Not planned: workspace "New Project on SSH" - needs main-process IPC to create remote
-directories, not currently worth the scope.
+(empty - both items processed 2026-08-26: the emoji tiles now carry the number itself, and the
+"New Project on SSH" is marked not-planned in [features.md](memory/features.md))

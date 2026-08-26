@@ -1007,14 +1007,17 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
 
   // ── open-TODO indicator ───────────────────────────────────────────────────
   //
-  // Emoji mode has no room for a number, so it gets a dot in the corner; the
-  // named modes get the count itself, right-aligned. Same data either way, and
-  // both carry the full "N open of M" in the tooltip, so the dot is a prompt to
-  // look rather than the whole answer.
+  // Every mode shows the number. Emoji mode used to get a bare 6px dot on the
+  // assumption that a tile has no room for a digit; it does - 8.5px tabular
+  // numerals in a 13px pill clear the glyph's corner - and a dot that only says
+  // "something is open here" sends you hunting for the count that the short and
+  // full modes hand over directly (2026-08-26).
   //
   // Intensity is stepped, not continuous: at a glance you're asking "is this
   // one quiet, busy, or piling up", and three levels answer that. A gradient
-  // would imply a precision the number already gives you.
+  // would imply a precision the number already gives you. In emoji mode the
+  // digit carries the magnitude, so the badge is drawn at full strength there
+  // and the stepping only tints the pill in the named modes.
   const counts = todoCounts(folder);
   if (counts && counts.open > 0) {
     const n = counts.open;
@@ -1025,18 +1028,29 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
       (opts.removable ? '  (right-click to forget)' : '');
 
     if (compact) {
-      // The tile is a fixed square and the dot sits on its corner, so the
+      // The tile is a fixed square and the badge sits on its corner, so the
       // button has to become the positioning context. Nothing else in the tile
       // is positioned, so this is safe.
       b.style.position = 'relative';
-      const dot = document.createElement('span');
-      dot.style.cssText =
-        'position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;' +
-        'pointer-events:none;background:currentColor;opacity:' + alpha + ';' +
-        // A ring in the panel's own background colour, so the dot reads as
+      const badge = document.createElement('span');
+      badge.style.cssText =
+        'position:absolute;top:-1px;right:-1px;min-width:13px;height:13px;padding:0 2.5px;' +
+        'box-sizing:border-box;border-radius:7px;display:flex;align-items:center;' +
+        'justify-content:center;pointer-events:none;background:currentColor;opacity:.92;' +
+        // A ring in the panel's own background colour, so the badge reads as
         // separate from the glyph rather than as part of it.
         'box-shadow:0 0 0 1.5px var(--bg-100,rgba(0,0,0,.55));';
-      b.appendChild(dot);
+      // The digit is painted in the panel background colour ON the text colour,
+      // so it stays legible in both themes without naming a palette entry.
+      // A separate node because `background:currentColor` above would otherwise
+      // swallow the text: same colour on both sides of the pill.
+      const num = document.createElement('i');
+      num.textContent = n > 99 ? '99+' : String(n);
+      num.style.cssText =
+        'font-style:normal;font-size:8.5px;font-weight:700;line-height:1;' +
+        'font-variant-numeric:tabular-nums;color:var(--bg-100,#1a1a1a);';
+      badge.appendChild(num);
+      b.appendChild(badge);
     } else {
       const badge = document.createElement('span');
       badge.style.cssText =

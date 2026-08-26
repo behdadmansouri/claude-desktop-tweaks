@@ -84,19 +84,49 @@ inhibitors() {
 # Whether the keep-awake governor currently considers itself working. Read from
 # the app's own log rather than recomputed, so this reports what the app
 # actually did, not what we think it should have done.
+#
+# It reads the app's OWN "[keep-awake] started/stopped" lines, not our
+# "[cc-keep-awake]" ones. Ours go through a bare console.log in the main
+# process, which electron-log's file transport does not capture - so grepping
+# for them found nothing and this printed "governor not active" while the
+# governor was visibly claiming and releasing the blocker every half hour
+# (2026-08-26). The app's own lines are the evidence that survives a restart:
+# the unpatched build claims once at startup and never releases, so a "stopped"
+# line existing at all is proof the governor is running.
 keepawake_state() {
   local log="$PATCHED_PROFILE/logs/main.log"
   [[ -f "$log" ]] || { echo "unknown (no main.log)"; return; }
-  local line
-  line="$(grep -a 'cc-keep-awake' "$log" 2>/dev/null | tail -1)"
-  if [[ -z "$line" ]]; then
-    if grep -qa 'keep-awake] started' "$log" 2>/dev/null; then
-      echo "legacy: claimed at startup, governor not active (restart pending)"
-    else
-      echo "no claim recorded"
-    fi
+  local last
+  last="$(grep -a 'keep-awake\] \(started\|stopped\)' "$log" 2>/dev/null | tail -1)"
+  [[ -n "$last" ]] || { echo "no claim recorded"; return; }
+
+  local held="blocking sleep" when="${last:0:16}"
+  [[ "$last" == *stopped* ]] && held="sleep allowed"
+
+  if grep -qa 'keep-awake\] stopped' "$log" 2>/dev/null; then
+    echo "$held since $when - governor active"
   else
-    echo "${line#*cc-keep-awake] }"
+    echo "$held since $when - legacy claim, governor not active (restart pending)"
+  fi
+}
+
+# Why it is blocking. The predicate is "some local_*.json under the profile's
+# claude-code-sessions was touched inside the idle window", so the answer is
+# always a file and an age. Printing it turns "why is this thing awake" from a
+# guess into a fact - and shows that merely opening the app, which rewrites a
+# session file, counts as work for a full window.
+keepawake_reason() {
+  local root="$PATCHED_PROFILE/claude-code-sessions"
+  local win="${CC_KEEPAWAKE_IDLE_MIN:-30}"
+  [[ -d "$root" ]] || { echo "no session store at $root"; return; }
+  local newest age
+  newest="$(find "$root" -name 'local_*.json' -printf '%T@\n' 2>/dev/null | sort -rn | head -1)"
+  [[ -n "$newest" ]] || { echo "no session files - idle"; return; }
+  age=$(( ($(date +%s) - ${newest%%.*}) / 60 ))
+  if [[ $age -lt $win ]]; then
+    echo "newest session file ${age}m old, window ${win}m - counts as working"
+  else
+    echo "newest session file ${age}m old, window ${win}m - counts as idle"
   fi
 }
 
@@ -133,6 +163,7 @@ cmd_status() {
     echo "    NOT shared - official build keeps its own list (claude-ctl share)"
   fi
   echo "    keep-awake: $(keepawake_state)"
+  echo "                $(keepawake_reason)"
   echo
   echo "  Power/lock inhibitors held right now:"
   inhibitors | sed 's/^/    /'

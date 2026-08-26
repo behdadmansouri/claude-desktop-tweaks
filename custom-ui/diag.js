@@ -68,6 +68,42 @@ function dgTopBar() {
   return out;
 }
 
+// What is holding the empty band ABOVE the tab pills open. With the native KWin
+// frame in place that band is dead space, but nothing in it is a control, so
+// dgTopBar() (which walks buttons) never sees the element that reserves it.
+//
+// Two views, because the answer is one of two shapes. `chain` walks up from a
+// pill and reports every ancestor's own box: if the space is padding or a fixed
+// height on a wrapper, it shows up there as paddingTop/height. `atPoint` asks
+// what is actually painted at three points inside the band: if the space is a
+// separate spacer element rather than padding, that is what finds it.
+function dgTopChain() {
+  const pill = [...document.querySelectorAll('button')].find(b => {
+    const r = b.getBoundingClientRect();
+    return r.height > 0 && r.top < 90 && r.width < 260 &&
+           /^(code|chat and cowork|chat)$/i.test((b.textContent || '').trim());
+  });
+  const chain = [];
+  if (pill) {
+    for (let el = pill; el && el !== document.documentElement && chain.length < DIAG_MAX; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      chain.push({
+        ...dgDesc(el),
+        padTop: cs.paddingTop, marTop: cs.marginTop, height: cs.height,
+        minHeight: cs.minHeight, pos: cs.position,
+        appRegion: cs.webkitAppRegion || cs.getPropertyValue('-webkit-app-region') || undefined,
+      });
+    }
+  }
+  const atPoint = [];
+  const vw = window.innerWidth;
+  for (const [x, y] of [[vw / 2, 8], [vw / 2, 24], [vw / 2, 40]]) {
+    const el = document.elementFromPoint(Math.round(x), y);
+    atPoint.push(el ? {y, ...dgDesc(el)} : {y, none: true});
+  }
+  return {anchor: pill ? dgDesc(pill) : null, chain, atPoint};
+}
+
 function dgUsageButtons() {
   const sel = 'button[aria-label*="usage" i],button[aria-label*="limit" i],button[aria-label*="plan" i]';
   return [...document.querySelectorAll(sel)].slice(0, DIAG_MAX).map(b => ({
@@ -101,6 +137,7 @@ function ccDump() {
     zoom: +(window.devicePixelRatio || 1).toFixed(2),
     usageButtons: dgUsageButtons(),
     topBar: dgTopBar(),
+    topChain: dgTopChain(),
     widthChain: dgWidthChain(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),

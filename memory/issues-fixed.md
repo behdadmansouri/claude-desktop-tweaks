@@ -807,14 +807,95 @@ themselves, and depth-capped at 12. Nothing about it depends on what the pane is
 
 ## 45. Per-project open-TODO counts (2026-08-25, feature)
 
-Not a bug. Each tile now shows how many unticked boxes its `TODO.md` has: a corner dot in emoji
-mode, the number itself in short/full mode, three stepped intensities (1-3 / 4-9 / 10+), and the
-exact "N open of M" in the tooltip.
+Not a bug. Each tile now shows how many unticked boxes its `TODO.md` has: the number itself in
+every mode, three stepped intensities (1-3 / 4-9 / 10+), and the exact "N open of M" in the
+tooltip. Emoji mode shipped with a bare 6px dot instead of a number, on the assumption that a tile
+had no room; the user reported the missing figure, and 8.5px tabular numerals in a 13px corner
+pill fit fine (2026-08-26). The stepping now only tints the named modes - in emoji mode the digit
+carries the magnitude, so the badge is drawn at full strength.
 
 No new IPC - it counts the same TODO.md text the preview pane already receives (baked at build
 time, refreshed live over `cc-ai-data-v2`). The regex is deliberately strict about markdown list
 syntax; anything looser starts counting checkboxes quoted inside code fences, and an inflated
 number is worse than no number because you stop trusting it.
+
+---
+
+## 46. The usage chip attached itself to a session row, because a chat was named "planning" (2026-08-26)
+
+**Symptom:** the chip's three percentages were painted across the sidebar session row *Fable
+project critique and planning*, with the hover card floating over the project list. Not the
+bottom-left corner this time (that was #44) - it was inline, inside the row.
+
+**Root cause:** `cuFindNative()` looked for the app's own usage control with
+
+```
+button[aria-label*="usage" i], button[aria-label*="limit" i], button[aria-label*="plan" i]
+```
+
+`plan` is a **substring** of `planning`, so the row's ⋯ overflow button - `aria-label="More
+options for Fable project critique and planning"` - matched. Every geometric guard then passed,
+because that button really is a 20x20 icon button, and `cuPlace()` inserted the chip into its
+container and collapsed the ⋯ to `width:0`.
+
+The evidence was sitting in the beacon the whole time: the `[cc-dump]` line lists that button
+*first* in `usageButtons`, above the real `"Usage: context 0, plan 38%"` one. Document order
+decided the match, and the wrong one comes first.
+
+**Fix:** three changes in `custom-ui/usage.js`.
+
+- The attribute selector stays as a cheap prefilter, but the real test is now a **word-boundary
+  regex** (`\busage\b`, `\b(usage|plan|rate|weekly|5-hour|context)\s+limits?\b`), plus a
+  rejection list for labels that announce themselves as controls *for* something else
+  ("more options", "options for", "menu for").
+- Candidates are **scored, not first-wins**: leading "Usage", carrying a `%` or the word
+  "context", and sitting in the bottom half of the window. Several buttons can legitimately pass
+  the label test; the composer-footer one wins.
+- Anything inside `[role="listitem"] / [role="row"] / [role="option"] / li / a[href]` is
+  rejected outright. A control inside a list row belongs to that row, whatever it is called.
+
+Also added `cuUncollapse()`: the collapsed button is remembered and restored when the match moves
+or the chip falls back to floating. Without it a mis-collapsed row control stayed 0px wide until
+React happened to remount it.
+
+**Lesson:** `[attr*="word"]` is not a word match. Every selector in this file that reads like
+English is a substring match against strings the *user* writes - chat titles, project names - so
+it is only ever one well-named conversation away from matching. Same failure family as #44 ("when
+a selector list keeps needing another entry, the selector list is the bug"), one layer down: here
+the list was right and the *matching rule* was wrong.
+
+---
+
+## 47. `claude-ctl` reported the keep-awake governor as inactive while it was visibly working (2026-08-26)
+
+**Symptom:** KDE showed "Claude Desktop is blocking sleep" a minute after the app was opened with
+nothing running, and `claude-ctl` said `legacy: claimed at startup, governor not active (restart
+pending)` - which reads as "#43 never shipped".
+
+**Root cause:** two separate things, neither of them the governor being broken.
+
+1. `keepawake_state()` grepped `main.log` for our own `[cc-keep-awake]` lines. Those are written
+   with a bare `console.log` from the main process, and **electron-log's file transport does not
+   capture bare console output** - only its own logger. So the grep found nothing and the
+   function fell through to its "legacy" branch. The app's own `[keep-awake] started/stopped`
+   lines were right there and told the true story: repeated start/stop pairs, which the unpatched
+   build (claim once, hold until quit) can never produce.
+2. The blocker genuinely was held, correctly, by the governor's own rule. The predicate is "some
+   `local_*.json` under `claude-code-sessions` was touched inside the idle window", and opening
+   the app writes one. So *opening the app* counts as work for a full 30 minutes even if nothing
+   runs. Confirmed against the log: released 00:28 (last write 23:57 + 30m), re-claimed 00:32
+   after a new session file at 00:31.
+
+**Fix:** `keepawake_state()` now reads the app's own started/stopped lines, and treats the
+existence of any `stopped` as proof the governor is live. A second line, `keepawake_reason()`,
+prints the age of the newest session file against the window, so the status answers *why* it is
+awake instead of just *that* it is. Window kept at 30 min by decision (2026-08-26) - a live turn
+writes those files every few seconds, so the window is only ever about how long the tail hangs on.
+
+**Lesson:** a status command that infers state from *our* log lines inherits every gap in that
+log's plumbing. Prefer evidence the app itself writes, and pick a signal whose *absence* is also
+meaningful - "a stopped line exists" survives restarts, log rotation, and our own console going
+nowhere.
 
 ---
 

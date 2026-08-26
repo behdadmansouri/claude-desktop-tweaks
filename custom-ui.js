@@ -1058,14 +1058,17 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
 
   // ── open-TODO indicator ───────────────────────────────────────────────────
   //
-  // Emoji mode has no room for a number, so it gets a dot in the corner; the
-  // named modes get the count itself, right-aligned. Same data either way, and
-  // both carry the full "N open of M" in the tooltip, so the dot is a prompt to
-  // look rather than the whole answer.
+  // Every mode shows the number. Emoji mode used to get a bare 6px dot on the
+  // assumption that a tile has no room for a digit; it does - 8.5px tabular
+  // numerals in a 13px pill clear the glyph's corner - and a dot that only says
+  // "something is open here" sends you hunting for the count that the short and
+  // full modes hand over directly (2026-08-26).
   //
   // Intensity is stepped, not continuous: at a glance you're asking "is this
   // one quiet, busy, or piling up", and three levels answer that. A gradient
-  // would imply a precision the number already gives you.
+  // would imply a precision the number already gives you. In emoji mode the
+  // digit carries the magnitude, so the badge is drawn at full strength there
+  // and the stepping only tints the pill in the named modes.
   const counts = todoCounts(folder);
   if (counts && counts.open > 0) {
     const n = counts.open;
@@ -1076,18 +1079,29 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
       (opts.removable ? '  (right-click to forget)' : '');
 
     if (compact) {
-      // The tile is a fixed square and the dot sits on its corner, so the
+      // The tile is a fixed square and the badge sits on its corner, so the
       // button has to become the positioning context. Nothing else in the tile
       // is positioned, so this is safe.
       b.style.position = 'relative';
-      const dot = document.createElement('span');
-      dot.style.cssText =
-        'position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;' +
-        'pointer-events:none;background:currentColor;opacity:' + alpha + ';' +
-        // A ring in the panel's own background colour, so the dot reads as
+      const badge = document.createElement('span');
+      badge.style.cssText =
+        'position:absolute;top:-1px;right:-1px;min-width:13px;height:13px;padding:0 2.5px;' +
+        'box-sizing:border-box;border-radius:7px;display:flex;align-items:center;' +
+        'justify-content:center;pointer-events:none;background:currentColor;opacity:.92;' +
+        // A ring in the panel's own background colour, so the badge reads as
         // separate from the glyph rather than as part of it.
         'box-shadow:0 0 0 1.5px var(--bg-100,rgba(0,0,0,.55));';
-      b.appendChild(dot);
+      // The digit is painted in the panel background colour ON the text colour,
+      // so it stays legible in both themes without naming a palette entry.
+      // A separate node because `background:currentColor` above would otherwise
+      // swallow the text: same colour on both sides of the pill.
+      const num = document.createElement('i');
+      num.textContent = n > 99 ? '99+' : String(n);
+      num.style.cssText =
+        'font-style:normal;font-size:8.5px;font-weight:700;line-height:1;' +
+        'font-variant-numeric:tabular-nums;color:var(--bg-100,#1a1a1a);';
+      badge.appendChild(num);
+      b.appendChild(badge);
     } else {
       const badge = document.createElement('span');
       badge.style.cssText =
@@ -2749,23 +2763,60 @@ function cuInjectCSS() {
 }
 
 let cuRoot = null, cuChipEl = null, cuCardEl = null, cuNative = null;
+// The button whose icon we collapsed, so it can be put back if the match moves.
+let cuCollapsed = null;
+
+function cuUncollapse(el) {
+  if (!el) return;
+  for (const svg of el.querySelectorAll(':scope > svg, :scope > span > svg')) {
+    svg.style.display = '';
+  }
+  el.style.width = '';
+  el.style.padding = '';
+  el.style.overflow = '';
+  if (cuCollapsed === el) cuCollapsed = null;
+}
 
 // The app's own usage control - the little circular tracker next to the model
 // name in the composer footer. Found by aria-label, never by class name or
 // position, and guarded to icon-button dimensions so a redesign that reuses the
 // word "usage" on a big container can't get its icon hidden (issues-fixed #18).
+//
+// The label test is a WORD match, not a substring one (issues-fixed #46).
+// `[aria-label*="plan" i]` also matched "More options for Fable project
+// critique and planning" - the 20x20 overflow button on a session row, which
+// passed every geometric guard, so the chip was inserted into that row and
+// painted across the session title. A substring of a word is not a match.
+//
+// And matching is not enough on its own: several buttons can pass, so they are
+// scored and the best one wins rather than the first one in document order.
+const CU_NATIVE_RE =
+  /\busage\b|\b(?:usage|plan|rate|weekly|5-?hour|context)\s+limits?\b|\bplan\s+usage\b/i;
+// Anything that announces itself as a control FOR something else is not it.
+const CU_NATIVE_NOT_RE = /more options|options for|menu for|settings for/i;
+
 function cuFindNative() {
   if (cuNative && cuNative.isConnected) return cuNative;
   cuNative = null;
+  // Cheap attribute prefilter, then the real (word-boundary) test.
   const cands = document.querySelectorAll(
-    'button[aria-label*="usage" i],button[aria-label*="Usage" i],' +
-    'button[aria-label*="limit" i],button[aria-label*="plan" i]');
+    'button[aria-label*="usage" i],button[aria-label*="limit" i],' +
+    'button[aria-label*="plan" i]');
+  let best = null, bestScore = -1;
   for (const b of cands) {
+    const label = b.getAttribute('aria-label') || '';
+    if (!CU_NATIVE_RE.test(label) || CU_NATIVE_NOT_RE.test(label)) continue;
     const r = b.getBoundingClientRect();
     if (r.width === 0 || r.width > 90 || r.height > 60) continue;
-    cuNative = b;
-    break;
+    // A control inside a list row belongs to that row, whatever it is called.
+    if (b.closest('[role="listitem"],[role="row"],[role="option"],li,a[href]')) continue;
+    // The real one leads with "Usage", carries live percentages, and sits in
+    // the composer footer at the bottom of the window.
+    const score = (/^usage\b/i.test(label) ? 2 : 0) + (/%|\bcontext\b/i.test(label) ? 2 : 0) +
+      (r.top > window.innerHeight * 0.5 ? 1 : 0);
+    if (score > bestScore) { best = b; bestScore = score; }
   }
+  cuNative = best;
   return cuNative;
 }
 
@@ -2792,14 +2843,21 @@ function cuPlace() {
     cuChipEl.classList.add('attached');
     // Collapse only the icon, never the button: the button stays in the DOM and
     // stays clickable, which is what keeps the native popover reachable.
+    //
+    // Whatever was collapsed last is restored first. Before #46 the match could
+    // land on an unrelated row control, and a mis-collapsed button stayed
+    // 0px wide until React happened to remount it.
+    if (cuCollapsed && cuCollapsed !== native) cuUncollapse(cuCollapsed);
     for (const svg of native.querySelectorAll(':scope > svg, :scope > span > svg')) {
       svg.style.display = 'none';
     }
     native.style.width = '0px';
     native.style.padding = '0px';
     native.style.overflow = 'hidden';
+    cuCollapsed = native;
     return true;
   }
+  if (cuCollapsed) cuUncollapse(cuCollapsed);
   if (cuRoot.parentElement !== document.body) document.body.appendChild(cuRoot);
   cuRoot.style.position = '';
   cuRoot.style.pointerEvents = '';
@@ -3358,6 +3416,42 @@ function dgTopBar() {
   return out;
 }
 
+// What is holding the empty band ABOVE the tab pills open. With the native KWin
+// frame in place that band is dead space, but nothing in it is a control, so
+// dgTopBar() (which walks buttons) never sees the element that reserves it.
+//
+// Two views, because the answer is one of two shapes. `chain` walks up from a
+// pill and reports every ancestor's own box: if the space is padding or a fixed
+// height on a wrapper, it shows up there as paddingTop/height. `atPoint` asks
+// what is actually painted at three points inside the band: if the space is a
+// separate spacer element rather than padding, that is what finds it.
+function dgTopChain() {
+  const pill = [...document.querySelectorAll('button')].find(b => {
+    const r = b.getBoundingClientRect();
+    return r.height > 0 && r.top < 90 && r.width < 260 &&
+           /^(code|chat and cowork|chat)$/i.test((b.textContent || '').trim());
+  });
+  const chain = [];
+  if (pill) {
+    for (let el = pill; el && el !== document.documentElement && chain.length < DIAG_MAX; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      chain.push({
+        ...dgDesc(el),
+        padTop: cs.paddingTop, marTop: cs.marginTop, height: cs.height,
+        minHeight: cs.minHeight, pos: cs.position,
+        appRegion: cs.webkitAppRegion || cs.getPropertyValue('-webkit-app-region') || undefined,
+      });
+    }
+  }
+  const atPoint = [];
+  const vw = window.innerWidth;
+  for (const [x, y] of [[vw / 2, 8], [vw / 2, 24], [vw / 2, 40]]) {
+    const el = document.elementFromPoint(Math.round(x), y);
+    atPoint.push(el ? {y, ...dgDesc(el)} : {y, none: true});
+  }
+  return {anchor: pill ? dgDesc(pill) : null, chain, atPoint};
+}
+
 function dgUsageButtons() {
   const sel = 'button[aria-label*="usage" i],button[aria-label*="limit" i],button[aria-label*="plan" i]';
   return [...document.querySelectorAll(sel)].slice(0, DIAG_MAX).map(b => ({
@@ -3391,6 +3485,7 @@ function ccDump() {
     zoom: +(window.devicePixelRatio || 1).toFixed(2),
     usageButtons: dgUsageButtons(),
     topBar: dgTopBar(),
+    topChain: dgTopChain(),
     widthChain: dgWidthChain(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),
