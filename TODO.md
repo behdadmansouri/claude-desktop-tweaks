@@ -97,6 +97,11 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       version pinning was needed. Caveat: `install-official.sh` replaces the whole prefix, so
       re-run the patch after every official update. Not yet applied - there is a pending update
       (1.26832.0 → 1.34493.1), so install that first.
+      **Confirmed still live 2026-08-26, cross-project** (Time Management project, from
+      ActivityWatch's own window-title data): the running app's window still reports app id
+      `Claude`, title `Code` (plus a Nerd Font glyph) for ~95 of the last 600 minutes - a generic,
+      non-enriched title, exactly the symptom this item exists to fix. Not new information, just a
+      live data point that the fix genuinely hasn't reached the running app yet.
 
 - [ ] **Decide whether the official build should share the session index** `S` - the script exists
       (`scripts/share-sessions.sh`, `--undo` to reverse) but has not been run. It symlinks only
