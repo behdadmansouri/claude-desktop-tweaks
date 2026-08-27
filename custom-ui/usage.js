@@ -405,6 +405,21 @@ function cuKnownTotal() {
   } catch (_) { return null; }
 }
 
+// Second way to learn the size, for the case that turned up immediately:
+// a session where the app never publishes "used / total" at all, so there is
+// nothing to learn from and the ring never appears. But the app's tray label
+// does publish a bare PERCENTAGE, and the transcript gives the token count, and
+// those two together are the size - derived, not guessed.
+//
+// Only trusted when the percentage is big enough to be precise: at 3% a
+// rounded integer is worth a third of a million tokens either way, while at
+// 20%+ the error is small and one real "used / total" reading later overwrites
+// it anyway.
+function cuDeriveTotal(used, pct) {
+  if (!used || !Number.isFinite(pct) || pct < 15) return null;
+  return Math.round(used / (pct / 100));
+}
+
 // The context figure without the popover: the desktop's Code tab IS Claude
 // Code, so the open session has a real transcript on disk, and its last
 // assistant entry carries the usage object the CLI shows. cc-session-info does
@@ -415,8 +430,16 @@ function cuKnownTotal() {
 function cuCtxFromSession() {
   const info = (typeof ccSessionInfo === 'function') ? ccSessionInfo() : null;
   if (!info || !info.ctxUsed) return false;
-  if (cuCtx && cuCtx.used === info.ctxUsed && !cuCtxStale()) return false;
-  cuSetCtx(null, info.ctxUsed, cuKnownTotal());
+  const used = info.ctxUsed;
+  let total = cuKnownTotal();
+  // A percentage the app published without a denominator, plus our own token
+  // count, gives the denominator. Learned once, then used for every session.
+  if (!total && cuCtx && cuCtx.pct != null && cuCtx.total == null) {
+    total = cuDeriveTotal(cuCtx.used || used, cuCtx.pct);
+    if (total) cuLearnTotal(total);
+  }
+  if (cuCtx && cuCtx.used === used && cuCtx.total === total && !cuCtxStale()) return false;
+  cuSetCtx(null, used, total);
   return true;
 }
 
