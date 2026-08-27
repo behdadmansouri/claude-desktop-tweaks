@@ -24,6 +24,28 @@ function injectBaseCSS() {
     '.df-leading-slot>*{margin-right:0!important;}',
     '.df-leading-slot:empty{display:inline-block!important;width:4px!important;min-width:4px!important;margin:0!important;}',
 
+    // ── the empty band above the tab pills ──
+    // Measured, not guessed (issues-fixed #18 is why): the app's own stylesheet
+    // has exactly one rule that opens it -
+    //     .dframe-root{--df-chrome-bar-height:0px}
+    //     .dframe-root[data-wco]{--df-chrome-bar-height:36px}
+    // and that variable is the sole consumer in two places:
+    //     .dframe-content{padding-top:var(--df-chrome-bar-height)}
+    //     .dframe-sidebar{top:calc(8px + var(--df-chrome-bar-height))}
+    // i.e. the same 36px the user removed by hand in DevTools before asking for
+    // this. `data-wco` means "the app is drawing its own window controls in an
+    // overlay strip". Since 2026-08-25 the main window is titleBarStyle:"default"
+    // and KWin draws the frame, so nothing is painted in that strip - it is
+    // reserved space for controls that live in the titlebar now.
+    //
+    // Zeroing the variable is deliberately the whole fix: it moves the pills and
+    // the sidebar up together, and it cannot blank the page the way hiding an
+    // element can, because no element is hidden. `cc-chrome-bar=keep` in
+    // localStorage puts the band back if a future build ever draws in it again.
+    (() => { try { return localStorage.getItem('cc-chrome-bar') === 'keep'; } catch (_) { return false; } })()
+      ? '/* chrome bar kept by cc-chrome-bar=keep */'
+      : '.dframe-root[data-wco]{--df-chrome-bar-height:0px!important;}',
+
     // ── dark-mode override for the workspace/project-picker panel ──
     // .cc-ws-panel's background is hardcoded to a light sepia (#f2e8d5) in
     // workspace.js (inline style, needed as the light-mode default since the
@@ -45,6 +67,29 @@ function injectBaseCSS() {
       '.cc-ws-panel select option{color:#ece5d5;background:#2e2919;}' +
     '}',
     '.cc-ws-panel select option{color:#1a1a1a;background:#f5f0e6;}',
+
+    // ── open-TODO badge colours ──
+    // These used to be inline: `background:currentColor` with the digit painted
+    // in `var(--bg-100)`. Both halves were wrong. currentColor is whatever the
+    // panel inherited, and --bg-100 is an app variable set on .dframe-content-inner
+    // - the panel lives on <body>, outside it, so the digit fell back to a fixed
+    // #1a1a1a that happened to match the pill in one theme and vanish in the
+    // other. Reported 2026-08-26 as "the number is the same colour as the dot".
+    //
+    // The fix is to stop borrowing colours at all. The panel's own background is
+    // hardcoded above (#f2e8d5 / #2e2919), so a badge can be given a fixed pair
+    // that is legible against it in both themes, and the digit never depends on
+    // what the surrounding page happens to have set.
+    '.cc-todo-dot{background:#b4441e;color:#fff6ea;box-shadow:0 0 0 1.5px #f2e8d5;}',
+    '.cc-todo-pill{color:#7d3312;background:rgba(180,68,30,.14);}',
+    '.cc-todo-pill.cc-l1{background:rgba(180,68,30,.24);}',
+    '.cc-todo-pill.cc-l2{background:rgba(180,68,30,.38);}',
+    '@media (prefers-color-scheme:dark){' +
+      '.cc-todo-dot{background:#f0a862;color:#2b2415;box-shadow:0 0 0 1.5px #2e2919;}' +
+      '.cc-todo-pill{color:#f0c894;background:rgba(240,168,98,.16);}' +
+      '.cc-todo-pill.cc-l1{background:rgba(240,168,98,.26);}' +
+      '.cc-todo-pill.cc-l2{background:rgba(240,168,98,.40);}' +
+    '}',
   ].join('\n');
   document.head.appendChild(s);
 }
@@ -1069,11 +1114,16 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // would imply a precision the number already gives you. In emoji mode the
   // digit carries the magnitude, so the badge is drawn at full strength there
   // and the stepping only tints the pill in the named modes.
+  //
+  // The stepping tints the pill's BACKGROUND only (via .cc-l1/.cc-l2 in
+  // css.js). It used to be `opacity` on the whole badge, which faded the digit
+  // along with the ground - a 3-open project rendered its number at 42%
+  // strength, i.e. the quietest projects were also the hardest to read.
+  // Colours live in css.js so they can be theme-paired; see the note there.
   const counts = todoCounts(folder);
   if (counts && counts.open > 0) {
     const n = counts.open;
     const level = n >= 10 ? 2 : n >= 4 ? 1 : 0;
-    const alpha = [0.42, 0.66, 0.95][level];
     b.title = folder + '  —  ' + n + ' open' +
       (counts.done ? ' of ' + (n + counts.done) : '') +
       (opts.removable ? '  (right-click to forget)' : '');
@@ -1084,31 +1134,21 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
       // is positioned, so this is safe.
       b.style.position = 'relative';
       const badge = document.createElement('span');
+      badge.className = 'cc-todo-dot';
       badge.style.cssText =
         'position:absolute;top:-1px;right:-1px;min-width:13px;height:13px;padding:0 2.5px;' +
         'box-sizing:border-box;border-radius:7px;display:flex;align-items:center;' +
-        'justify-content:center;pointer-events:none;background:currentColor;opacity:.92;' +
-        // A ring in the panel's own background colour, so the badge reads as
-        // separate from the glyph rather than as part of it.
-        'box-shadow:0 0 0 1.5px var(--bg-100,rgba(0,0,0,.55));';
-      // The digit is painted in the panel background colour ON the text colour,
-      // so it stays legible in both themes without naming a palette entry.
-      // A separate node because `background:currentColor` above would otherwise
-      // swallow the text: same colour on both sides of the pill.
-      const num = document.createElement('i');
-      num.textContent = n > 99 ? '99+' : String(n);
-      num.style.cssText =
-        'font-style:normal;font-size:8.5px;font-weight:700;line-height:1;' +
-        'font-variant-numeric:tabular-nums;color:var(--bg-100,#1a1a1a);';
-      badge.appendChild(num);
+        'justify-content:center;pointer-events:none;' +
+        'font-size:8.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;';
+      badge.textContent = n > 99 ? '99+' : String(n);
       b.appendChild(badge);
     } else {
       const badge = document.createElement('span');
+      badge.className = 'cc-todo-pill' + (level ? ' cc-l' + level : '');
       badge.style.cssText =
         'margin-left:auto;flex:none;font-size:9.5px;font-weight:700;' +
         'font-variant-numeric:tabular-nums;line-height:1;padding:1px 4px;' +
-        'border-radius:7px;pointer-events:none;opacity:' + alpha + ';' +
-        'background:var(--bg-300,rgba(128,128,128,.22));';
+        'border-radius:7px;pointer-events:none;';
       badge.textContent = String(n);
       b.appendChild(badge);
     }
@@ -3452,6 +3492,48 @@ function dgTopChain() {
   return {anchor: pill ? dgDesc(pill) : null, chain, atPoint};
 }
 
+// What the sidebar rows actually say, and where their leading glyph (if any)
+// comes from. Asked 2026-08-26: several projects lost the emoji off their name
+// in the left sidebar ("connoisseurd", "dogether", "claude-desktop-tweaks"),
+// and those names are not the folder basenames on disk ("Connoisseurd 🎨",
+// "Dogether 🐕", "Claude Desktop 🤖") - so the label is coming from somewhere
+// other than the path, and guessing which somewhere is how this project has
+// broken things before.
+//
+// Reports, per row: the visible text, the leading slot's own text/child tags
+// and computed width (our own CSS forces that slot to width:auto, so if the
+// glyph is there but invisible, the width is the tell), plus every data-*
+// attribute and title/href on the row - that is where a path or an id that
+// maps back to a folder would be.
+function dgSidebarRows() {
+  const rows = document.querySelectorAll('.dframe-sidebar [data-row], .dframe-sidebar-body [data-row]');
+  const out = [];
+  for (const row of rows) {
+    const slot = row.querySelector('.df-leading-slot');
+    const data = {};
+    for (const a of row.attributes) {
+      if (a.name.startsWith('data-') || a.name === 'title' || a.name === 'href') {
+        data[a.name] = (a.value || '').slice(0, 80);
+      }
+    }
+    out.push({
+      text: (row.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+      label: (row.getAttribute('aria-label') || '').slice(0, 60) || undefined,
+      slot: slot
+        ? {
+            text: (slot.textContent || '').slice(0, 12),
+            kids: [...slot.children].map(c => c.tagName.toLowerCase()).slice(0, 4),
+            w: getComputedStyle(slot).width,
+            disp: getComputedStyle(slot).display,
+          }
+        : null,
+      attrs: data,
+    });
+    if (out.length >= 24) break;
+  }
+  return out;
+}
+
 function dgUsageButtons() {
   const sel = 'button[aria-label*="usage" i],button[aria-label*="limit" i],button[aria-label*="plan" i]';
   return [...document.querySelectorAll(sel)].slice(0, DIAG_MAX).map(b => ({
@@ -3486,6 +3568,7 @@ function ccDump() {
     usageButtons: dgUsageButtons(),
     topBar: dgTopBar(),
     topChain: dgTopChain(),
+    sidebarRows: dgSidebarRows(),
     widthChain: dgWidthChain(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),

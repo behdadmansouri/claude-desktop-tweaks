@@ -104,6 +104,48 @@ function dgTopChain() {
   return {anchor: pill ? dgDesc(pill) : null, chain, atPoint};
 }
 
+// What the sidebar rows actually say, and where their leading glyph (if any)
+// comes from. Asked 2026-08-26: several projects lost the emoji off their name
+// in the left sidebar ("connoisseurd", "dogether", "claude-desktop-tweaks"),
+// and those names are not the folder basenames on disk ("Connoisseurd 🎨",
+// "Dogether 🐕", "Claude Desktop 🤖") - so the label is coming from somewhere
+// other than the path, and guessing which somewhere is how this project has
+// broken things before.
+//
+// Reports, per row: the visible text, the leading slot's own text/child tags
+// and computed width (our own CSS forces that slot to width:auto, so if the
+// glyph is there but invisible, the width is the tell), plus every data-*
+// attribute and title/href on the row - that is where a path or an id that
+// maps back to a folder would be.
+function dgSidebarRows() {
+  const rows = document.querySelectorAll('.dframe-sidebar [data-row], .dframe-sidebar-body [data-row]');
+  const out = [];
+  for (const row of rows) {
+    const slot = row.querySelector('.df-leading-slot');
+    const data = {};
+    for (const a of row.attributes) {
+      if (a.name.startsWith('data-') || a.name === 'title' || a.name === 'href') {
+        data[a.name] = (a.value || '').slice(0, 80);
+      }
+    }
+    out.push({
+      text: (row.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+      label: (row.getAttribute('aria-label') || '').slice(0, 60) || undefined,
+      slot: slot
+        ? {
+            text: (slot.textContent || '').slice(0, 12),
+            kids: [...slot.children].map(c => c.tagName.toLowerCase()).slice(0, 4),
+            w: getComputedStyle(slot).width,
+            disp: getComputedStyle(slot).display,
+          }
+        : null,
+      attrs: data,
+    });
+    if (out.length >= 24) break;
+  }
+  return out;
+}
+
 function dgUsageButtons() {
   const sel = 'button[aria-label*="usage" i],button[aria-label*="limit" i],button[aria-label*="plan" i]';
   return [...document.querySelectorAll(sel)].slice(0, DIAG_MAX).map(b => ({
@@ -138,6 +180,7 @@ function ccDump() {
     usageButtons: dgUsageButtons(),
     topBar: dgTopBar(),
     topChain: dgTopChain(),
+    sidebarRows: dgSidebarRows(),
     widthChain: dgWidthChain(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),

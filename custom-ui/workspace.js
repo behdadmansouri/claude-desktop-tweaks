@@ -1018,11 +1018,16 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // would imply a precision the number already gives you. In emoji mode the
   // digit carries the magnitude, so the badge is drawn at full strength there
   // and the stepping only tints the pill in the named modes.
+  //
+  // The stepping tints the pill's BACKGROUND only (via .cc-l1/.cc-l2 in
+  // css.js). It used to be `opacity` on the whole badge, which faded the digit
+  // along with the ground - a 3-open project rendered its number at 42%
+  // strength, i.e. the quietest projects were also the hardest to read.
+  // Colours live in css.js so they can be theme-paired; see the note there.
   const counts = todoCounts(folder);
   if (counts && counts.open > 0) {
     const n = counts.open;
     const level = n >= 10 ? 2 : n >= 4 ? 1 : 0;
-    const alpha = [0.42, 0.66, 0.95][level];
     b.title = folder + '  —  ' + n + ' open' +
       (counts.done ? ' of ' + (n + counts.done) : '') +
       (opts.removable ? '  (right-click to forget)' : '');
@@ -1033,31 +1038,21 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
       // is positioned, so this is safe.
       b.style.position = 'relative';
       const badge = document.createElement('span');
+      badge.className = 'cc-todo-dot';
       badge.style.cssText =
         'position:absolute;top:-1px;right:-1px;min-width:13px;height:13px;padding:0 2.5px;' +
         'box-sizing:border-box;border-radius:7px;display:flex;align-items:center;' +
-        'justify-content:center;pointer-events:none;background:currentColor;opacity:.92;' +
-        // A ring in the panel's own background colour, so the badge reads as
-        // separate from the glyph rather than as part of it.
-        'box-shadow:0 0 0 1.5px var(--bg-100,rgba(0,0,0,.55));';
-      // The digit is painted in the panel background colour ON the text colour,
-      // so it stays legible in both themes without naming a palette entry.
-      // A separate node because `background:currentColor` above would otherwise
-      // swallow the text: same colour on both sides of the pill.
-      const num = document.createElement('i');
-      num.textContent = n > 99 ? '99+' : String(n);
-      num.style.cssText =
-        'font-style:normal;font-size:8.5px;font-weight:700;line-height:1;' +
-        'font-variant-numeric:tabular-nums;color:var(--bg-100,#1a1a1a);';
-      badge.appendChild(num);
+        'justify-content:center;pointer-events:none;' +
+        'font-size:8.5px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;';
+      badge.textContent = n > 99 ? '99+' : String(n);
       b.appendChild(badge);
     } else {
       const badge = document.createElement('span');
+      badge.className = 'cc-todo-pill' + (level ? ' cc-l' + level : '');
       badge.style.cssText =
         'margin-left:auto;flex:none;font-size:9.5px;font-weight:700;' +
         'font-variant-numeric:tabular-nums;line-height:1;padding:1px 4px;' +
-        'border-radius:7px;pointer-events:none;opacity:' + alpha + ';' +
-        'background:var(--bg-300,rgba(128,128,128,.22));';
+        'border-radius:7px;pointer-events:none;';
       badge.textContent = String(n);
       b.appendChild(badge);
     }
