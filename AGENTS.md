@@ -177,6 +177,8 @@ Electron processes risks LevelDB corruption.
 | `memory/design-decisions.md` | Whitelist guards, absolute timestamps, DOM scanner patterns |
 | `memory/maintenance.md` | Deploy workflow, folder renames, AppImage upgrades |
 | `memory/issues-fixed.md` | Bug history (50 entries), each with symptom, root cause, fix and the lesson |
+| `USAGE.md` | The operator's page: `claude-ctl`, the autoupdate timer, the patch loop, session sharing, and where to look when something breaks |
+| `memory/todo-archive.md` | Detail trimmed out of `TODO.md` when items were shortened. Not read unless a short item needs unpacking |
 | `memory/changelog.md` | Dated, append-only record of what shipped, in order. Post-mortems stay in `issues-fixed.md` |
 | `memory/perf-security.md` | Security and performance review |
 | `docs/review-2026-08.md` | Fleet review 2026-08-26: patch brittleness vs upstream, the stranded untrack commit / unpushed-bundle risk, update-path verdict, convention drift |
