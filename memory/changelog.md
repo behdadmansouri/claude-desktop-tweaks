@@ -19,6 +19,18 @@ in what order" view.
 - **`diag.js` dumps `topChain`** - ancestor padding/height above the tab pills, plus
   `elementFromPoint` inside the empty band - so the dead top band can be collapsed by measurement
   rather than by a guessed selector.
+- **The open-TODO badge is legible in both themes.** It was painting its number in a colour it
+  borrowed from outside the panel, which in one theme matched its own ground exactly, and fading
+  the number along with the tint at low counts (issues-fixed #48).
+- **The dead 36px band above the tab pills is gone.** It was `--df-chrome-bar-height`, set only
+  under `[data-wco]` - the app reserving room for window controls it no longer draws, now that
+  KWin owns the frame. `cc-chrome-bar=keep` restores it (issues-fixed #49).
+- **`diag.js` dumps `sidebarRows`** - row text, leading-slot contents and width, and every
+  `data-*` on the row - to answer why sidebar rows show `claude-desktop-tweaks` rather than the
+  folder name `Claude Desktop 🤖`. Probe only; no fix yet.
+- **Repo hygiene:** the stranded untrack commit is on `main` (`e219450`), the stale agent worktree
+  and its branch are gone, and 18.6 MB of extracted Anthropic bundles are out of the tree. Still
+  unpushed.
 
 Confirmed fixed by the user in the same pass, no code of ours involved: the chat column is
 full-width, Cowork no longer shows duplicate close buttons, and the effort selector stays put.

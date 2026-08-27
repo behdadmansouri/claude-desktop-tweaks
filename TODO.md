@@ -6,17 +6,13 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## ⚡ Next up
 
-- [ ] **Merge the stranded untrack commit before any push** `S` - `main` is 19 commits ahead of
-      the public GitHub remote and still tracks `index.js` + `index.chunk-BOXWZA6T.js` (18.6 MB
-      of extracted Anthropic bundles). Commit `86d1ddc` already untracks them with the right
-      ignore globs but is stranded in the stale worktree
-      `.claude/worktrees/blissful-noether-bd840c`. Cherry-pick it onto main, then
-      `git worktree remove` the worktree and delete branch `claude/blissful-noether-bd840c`.
-      Do NOT push before this lands. Details: [docs/review-2026-08.md](docs/review-2026-08.md) 🤖
+- [x] **Merge the stranded untrack commit before any push** - done 2026-08-26. Cherry-picked as
+      `e219450` (one `.gitignore` conflict, both hunks kept), worktree removed, branch
+      `claude/blissful-noether-bd840c` deleted. `index.js` / `index.chunk-*.js` are untracked
+      *and* gone from the working tree - re-extract from the asar if one is ever needed again.
+      The push itself is still unmade and still the user's call.
 
-- [ ] **Commit the in-flight #46 work** `S` - `custom-ui/usage.js` + `custom-ui/workspace.js`
-      sit modified and uncommitted (aria-label word-match fix, collapse/uncollapse). Finish or
-      commit as-is so the tree is clean. 🤖
+- [x] **Commit the in-flight #46 work** - done 2026-08-26 as part of `244925f`; tree is clean.
 
 - [ ] **Rewrite the `update-claude-desktop` skill** `S` - `~/.claude/skills/update-claude-desktop/SKILL.md`
       (frozen 2026-07-24) still drives `update-appimage.sh`, dead since the AUR removal, and
@@ -36,21 +32,35 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       payload that carries a token count. Do **not** re-add a timer that opens the popover
       ([issues-fixed.md](memory/issues-fixed.md) #13).
 
-- [ ] **Kill the dead band above the tab pills** `S` - the native KWin frame is confirmed working,
-      and the app still reserves ~45px above the "Chat and Cowork" / "Code" pills plus an empty
-      32px `.epitaxy-titlebar` drag strip to their right. Decided 2026-08-26: keep the pills,
-      reclaim the empty space. Blocked on measurement, not on the decision - `diag.js` now dumps
-      `topChain` (ancestor padding/height walked up from a pill, plus `elementFromPoint` at three
-      heights inside the band). Read it out of the next `[cc-dump]` line after a restart and
-      write a CSS override against the computed value, never a guessed class
-      ([issues-fixed.md](memory/issues-fixed.md) #18). `chrome.js`'s whole-bar hider is the wrong
-      tool here: it would take the tab pills with it.
+- [ ] **Kill the dead band above the tab pills** `S` - **fixed and deployed 2026-08-26, unseen.**
+      `topChain` came back with `anchor:null` (the pill text match failed), so the answer came
+      from the app's own stylesheet instead: `.dframe-root[data-wco]{--df-chrome-bar-height:36px}`,
+      consumed only by `.dframe-content{padding-top}` and `.dframe-sidebar{top:calc(8px + …)}` -
+      the same two paddings the user had already removed by hand. `css.js` now zeroes that
+      variable; `localStorage['cc-chrome-bar']='keep'` puts it back. After a restart the pills
+      should sit ~36px higher with the sidebar, and nothing should be clipped at the top of the
+      page. The empty `.epitaxy-titlebar` strip to their right is a separate 32px item, still open.
+
+- [ ] **Sidebar rows lost their project emoji** `M` - reported 2026-08-26: rows read
+      `connoisseurd`, `dogether`, `claude-desktop-tweaks` where the folders on disk are
+      `Connoisseurd 🎨`, `Dogether 🐕`, `Claude Desktop 🤖`. Those labels are not the folder
+      basenames (`claude-desktop-tweaks` is the *repo* name), so the app is naming the row from
+      something other than the path, and `splitEmoji()` - verified against the real folder list,
+      32/32 correct - is not involved. `diag.js` now dumps `sidebarRows` (visible text, the
+      `.df-leading-slot` contents/width, and every `data-*`/`title`/`href` on the row). Open the
+      sidebar, run `window.__ccDump()`, and read the line before writing any fix.
 
 - [ ] **Verify the usage chip lands in the composer footer** `S` - the mis-attach is fixed and
       deployed ([issues-fixed.md](memory/issues-fixed.md) #46) but unseen: it was matching a
       session row's "More options for ... and pla**nning**" button. After a restart the chip
       should sit inline next to Opus 5 / Medium with the app's own ring collapsed, and no session
       row should have text painted over it. `window.__ccUsage().attachedTo` names the match.
+
+- [ ] **Verify the open-TODO badge is readable** `S` - fixed and deployed 2026-08-26 (the digit
+      was inheriting the same colour as its own ground; see the commit and
+      [issues-fixed.md](memory/issues-fixed.md) #47). After a restart the tile dot should be
+      terracotta with a cream number in light mode and amber with a dark number in dark mode, and
+      the named-mode pill's number should be full strength at every count.
 
 - [ ] **Catch the "Capturing" inhibitor in the act** `S` - it is **not** permanent. A live check
       (`claude-ctl` prints the list) found only the Electron `powerSaveBlocker` and Chromium

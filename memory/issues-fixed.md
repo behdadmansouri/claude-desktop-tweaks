@@ -899,6 +899,62 @@ nowhere.
 
 ---
 
+## 48. The open-TODO badge painted its number in its own background colour (2026-08-26)
+
+**Symptom:** "when the dot is white, the number on it is white; when the dot is black, the number
+is black." Both badge shapes were affected - the tile dot in emoji mode and the pill in the named
+modes - so the count was unreadable in whichever theme happened to collide.
+
+**Root cause:** the badge borrowed both of its colours from the surrounding page, and got neither.
+
+1. The tile dot was `background:currentColor` with the digit in `color:var(--bg-100,#1a1a1a)`.
+   `--bg-100` is declared on `.dframe-content-inner`, and the panel is appended to `<body>` -
+   *outside* that element - so the variable never resolved and the digit was always the literal
+   fallback `#1a1a1a`, while the ground followed whatever text colour the panel had inherited.
+   In dark mode both ended up dark. The pairing was never robust; it just happened to work in
+   light mode, which is where it was written.
+2. The pill's three intensity steps were applied as `opacity` on the badge element, which fades
+   the text along with the ground. The lowest step, `0.42`, is the one used for 1-3 open items -
+   so the quietest projects, the common case, had the least readable number.
+
+**Fix:** the badge stops borrowing. `css.js` carries `.cc-todo-dot` / `.cc-todo-pill` with an
+explicit foreground/background pair per theme, chosen against the panel's *own* hardcoded
+background (`#f2e8d5` light, `#2e2919` dark) rather than against the app's palette. Intensity is
+now three background tints (`.cc-l1` / `.cc-l2`); the digit is full strength at every count.
+
+**Lesson:** `currentColor` and a `var()` fallback look theme-aware and are not - together they are
+two independent guesses about the same surface. Anything drawn on the panel should take its colours
+from the panel, which is the one background this code actually controls. And check where a CSS
+variable is *declared* before consuming it: the panel deliberately lives outside the app's tree,
+so app-scoped variables silently fall back there, every time.
+
+---
+
+## 49. The empty band above the tab pills was one variable, not a layout (2026-08-26)
+
+**Symptom:** ~36px of dead space above the "Chat and Cowork" / "Code" pills, present since the
+window went back to a native KWin frame. Standing TODO item, previously blocked on "measure it
+first" - and the `topChain` probe added for exactly that came back with `anchor:null`, because it
+matches a pill by `textContent` and the 08-22 build stopped putting text in those nodes (#41).
+
+**Root cause:** `.dframe-root[data-wco]{--df-chrome-bar-height:36px}` in the app's own stylesheet.
+`data-wco` marks "the app draws its own window controls in an overlay strip", and the variable has
+exactly two consumers: `.dframe-content{padding-top}` and `.dframe-sidebar{top:calc(8px + …)}`.
+Since the main window became `titleBarStyle:"default"` and KWin took over the frame, nothing is
+ever painted in that strip.
+
+**Fix:** `css.js` sets `--df-chrome-bar-height:0px!important` on `.dframe-root[data-wco]`;
+`localStorage['cc-chrome-bar']='keep'` opts out. No element is hidden, which is what makes this
+safe in a way the top-bar hider (#18) was not - the failure mode there was blanking a container.
+
+**Lesson:** when a DOM probe fails, the shipped stylesheet is still evidence. Grepping the app's
+CSS for the *consumers* of a length found the answer in one pass, and found it as a single named
+variable rather than as a class to override - which is both a smaller patch and one that survives
+a re-layout. The probe still needs fixing: anything in `diag.js` that finds a node by text is
+blind on this build, same as everything `labelsOf()` had to replace.
+
+---
+
 ## Maintenance note: `custom-ui/workspace.js` contained a literal NUL byte
 
 Until 2026-08-25 the file held `normConn(currentConn || '\x00')` - a sentinel meaning "match
