@@ -1,7 +1,7 @@
 # Architecture Notes
 
 Detailed technical discoveries about how the patching stack works.
-See [CLAUDE.md](../CLAUDE.md) for the quick-reference overview.
+See [AGENTS.md](../AGENTS.md) for the quick-reference overview.
 
 ---
 

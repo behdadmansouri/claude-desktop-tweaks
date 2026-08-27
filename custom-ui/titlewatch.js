@@ -132,11 +132,18 @@ let twLast = '';
 function twApply() {
   const r = twResolve();
   let title = r.title;
+  const info = ccSessionInfo();
+  // The session record's own title beats every DOM strategy: it is what the app
+  // itself calls this session. Measured 2026-08-27 in the ActivityWatch bucket -
+  // 327 minutes of "Code" and then "Claude Desktop 🤖 · Code", because the
+  // strategies were finding the tab pill, not the conversation.
+  const recorded = info ? twUsable(info.title) : '';
+  if (recorded) title = recorded;
   const project = twProject();
   if (project) {
     // A conversation title that is only the route fallback ("Project") adds
     // nothing next to a real project name.
-    title = (title && r.via !== 'route' && title !== project)
+    title = (title && (recorded || r.via !== 'route') && title !== project)
       ? project + TW_SEP + title
       : project;
     if (title.length > TW_MAX_LEN) title = title.slice(0, TW_MAX_LEN - 1) + '…';

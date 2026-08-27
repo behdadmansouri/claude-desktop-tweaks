@@ -15,7 +15,7 @@ Custom UI injection and keyboard shortcuts for the Claude Desktop Electron app.
 | **Layout** | dframe layout fixes |
 | **Dialogs** | Auto-dismiss startup popups, hide unavailable model banners |
 
-**20+ features implemented.** See [CLAUDE.md](CLAUDE.md) for full details and [shortcuts.md](shortcuts.md) for keyboard reference.
+**20+ features implemented.** See [AGENTS.md](AGENTS.md) for full details and [shortcuts.md](shortcuts.md) for keyboard reference.
 
 ---
 
@@ -45,7 +45,7 @@ Then fully quit and restart Claude Desktop.
 
 ```bash
 # 1. Edit the relevant module in custom-ui/ (css.js, banners.js, usage.js,
-#    workspace.js, sidebar.js, topbar.js, fbar.js, bootstrap.js - see CLAUDE.md
+#    workspace.js, sidebar.js, topbar.js, fbar.js, bootstrap.js - see AGENTS.md
 #    for what lives where). custom-ui.js itself is a generated build artifact.
 code custom-ui/
 
@@ -61,7 +61,7 @@ code custom-ui/
 
 ## Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** - Architecture, how patching works, debugging
+- **[AGENTS.md](AGENTS.md)** - Architecture, how patching works, debugging
 - **[TODO.md](TODO.md)** - Feature status and outstanding work
 - **[shortcuts.md](shortcuts.md)** - All keyboard shortcuts
 - **[memory/](memory/MEMORY.md)** - Architecture, design decisions, bug history

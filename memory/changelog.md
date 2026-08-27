@@ -4,6 +4,24 @@ Feature-level, dated, append-only. Not a per-commit log (`git log` covers that) 
 log. Bug *post-mortems* live in [issues-fixed.md](issues-fixed.md); this is the "what shipped,
 in what order" view.
 
+## 2026-08-27
+
+- **`CLAUDE.md` is now `AGENTS.md`** - the workspace convention since 2026-08-18; this project had
+  carried the old name since it was created (2026-06-19) and had it sitting in a backlog after a
+  review spotted it. References updated everywhere but `docs/review-2026-08.md`, which is a dated
+  document quoting the state at the time.
+- **`USAGE.md`** - the operator's page for `claude-ctl`, the timer, the patch loop and session
+  sharing, which had been spread across the registry and `maintenance.md`.
+- **The official build now shares the session list** (`claude-ctl share`), 366 records. Only the
+  index is linked; transcripts were always shared.
+- **The window title carries the conversation, not the tab.** Measured in the ActivityWatch bucket:
+  327 minutes of `Code`, then `Claude Desktop 🤖 · Code` once the project half landed - the DOM
+  strategies were finding the tab pill. The session record's own title is used now.
+- **`TODO.md` gained a `Verification` section split into Mine and Yours**, and lost its wordiness.
+  Both are now workspace-wide conventions.
+- A Stop hook (`~/.claude/hooks/check-todo-done-items.py`, this laptop) blocks on any `- [x]` left
+  in a TODO file, so the "finished items live in the changelog" rule stops depending on memory.
+
 ## 2026-08-26
 
 - **Usage chip stops hijacking session rows.** It was attaching itself to the ⋯ button of a chat

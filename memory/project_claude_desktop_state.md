@@ -11,7 +11,7 @@ Claude Desktop is patched and working as of 2026-07-08. Wiki lives at `memory/` 
 
 **Why:** User wants custom UI injected into Claude Desktop's Electron renderer via a patched asar.
 
-**How to apply:** Start from `CLAUDE.md` for file registry, then open the relevant `custom-ui/` module.
+**How to apply:** Start from `AGENTS.md` for file registry, then open the relevant `custom-ui/` module.
 
 Key facts:
 - Patched app is at `/home/z3z0/.local/lib/claude-desktop-patched/`, asar version 2.1.149 (official app has auto-updated ahead to 2.1.201 under `~/.local/share/claude/versions/` - patched build has not been rebased onto it yet)
