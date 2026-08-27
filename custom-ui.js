@@ -3506,7 +3506,9 @@ function dgTopChain() {
 // attribute and title/href on the row - that is where a path or an id that
 // maps back to a folder would be.
 function dgSidebarRows() {
-  const rows = document.querySelectorAll('.dframe-sidebar [data-row], .dframe-sidebar-body [data-row]');
+  // Document-wide, not `.dframe-sidebar [data-row]`: scoping it to the sidebar
+  // caught 22 chat titles and none of the project rows this was written for.
+  const rows = document.querySelectorAll('[data-row]');
   const out = [];
   for (const row of rows) {
     const slot = row.querySelector('.df-leading-slot');
@@ -3523,6 +3525,9 @@ function dgSidebarRows() {
         ? {
             text: (slot.textContent || '').slice(0, 12),
             kids: [...slot.children].map(c => c.tagName.toLowerCase()).slice(0, 4),
+            // Every slot on this build reports text:"" with one <span> child, so
+            // the markup itself is the only thing that says what is in there.
+            html: (slot.innerHTML || '').replace(/\s+/g, ' ').slice(0, 120),
             w: getComputedStyle(slot).width,
             disp: getComputedStyle(slot).display,
           }
@@ -3530,6 +3535,66 @@ function dgSidebarRows() {
       attrs: data,
     });
     if (out.length >= 24) break;
+  }
+  return out;
+}
+
+// The first `sidebarRows` dump (2026-08-26) answered a question nobody asked:
+// all 22 rows it caught were chat titles, because `.dframe-sidebar` in the Code
+// tab holds sessions, not projects. The project rows the user means live in
+// some other container, and the honest way to find a container you cannot name
+// is to search by the text you already know is in it.
+//
+// So: hunt the needle anywhere in the document, then report the SMALLEST element
+// containing it, plus a bounded slice of its row-ish ancestor's outerHTML. That
+// last part is the point - it shows whether the missing glyph is an empty span,
+// a background-image, an <img>, or genuinely absent from the markup, without
+// another round trip. Needles are overridable: localStorage['cc-diag-find'] as
+// a comma-separated list.
+const FIND_KEY = 'cc-diag-find';
+const FIND_DEFAULT = 'connoisseurd,dogether,claude-desktop';
+
+function dgFindLabels() {
+  let needles = FIND_DEFAULT;
+  try { needles = localStorage.getItem(FIND_KEY) || FIND_DEFAULT; } catch (_) {}
+  const list = needles.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!list.length) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const el of document.querySelectorAll('span,a,button,div,li,p')) {
+    if (el.children.length > 1) continue;          // want the leaf that holds the text
+    const t = (el.textContent || '').trim();
+    if (!t || t.length > 80) continue;
+    const low = t.toLowerCase();
+    if (!list.some(n => low.includes(n))) continue;
+
+    // The row is whatever ancestor carries data-row, or three levels up if the
+    // build has stopped marking them.
+    let row = el.closest('[data-row]');
+    if (!row) { row = el; for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement; }
+    const key = t + '|' + dgRect(row).join(',');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const slot = row.querySelector('.df-leading-slot');
+    const attrs = {};
+    for (const a of row.attributes) {
+      if (a.name.startsWith('data-') || a.name === 'title' || a.name === 'href' || a.name === 'aria-label') {
+        attrs[a.name] = (a.value || '').slice(0, 100);
+      }
+    }
+    out.push({
+      text: t,
+      leaf: dgDesc(el),
+      row: dgDesc(row),
+      attrs,
+      slot: slot ? {text: (slot.textContent || '').slice(0, 12), w: getComputedStyle(slot).width} : null,
+      // Bounded on purpose: enough to see the shape of the row, not enough to
+      // dump the sidebar into the log.
+      html: (row.outerHTML || '').replace(/\s+/g, ' ').slice(0, 700),
+    });
+    if (out.length >= 6) break;
   }
   return out;
 }
@@ -3569,6 +3634,7 @@ function ccDump() {
     topBar: dgTopBar(),
     topChain: dgTopChain(),
     sidebarRows: dgSidebarRows(),
+    findLabels: dgFindLabels(),
     widthChain: dgWidthChain(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),
