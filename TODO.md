@@ -31,6 +31,15 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       `localStorage['cc-usage-probe']='1'` and watch `[cc-usage-probe]` in the console for an API
       payload that carries a token count. Do **not** re-add a timer that opens the popover
       ([issues-fixed.md](memory/issues-fixed.md) #13).
+      **Narrowed 2026-08-27** (still reported as "I have to click usage to make the context
+      appear"): the app's own tray button *does* carry it - `aria-label="Usage: context 13%,
+      plan 7%"` - and `cuScanContext()` step 1 already reads exactly that, no change needed
+      there. The gap is upstream of us: three dumps, three different labels. `Usage: plan 3%`
+      and `Usage: context 0, plan 83%` with the popover shut, the real number only in the dump
+      taken while it was open. So the app populates its own label when the popover renders and
+      lets it go stale otherwise. Next candidate is not the DOM at all: the transcript is a
+      `.jsonl` under `~/.claude/projects/<slug>/` and the bridge already reads files, so the
+      token count could be computed rather than scraped.
 
 - [ ] **Kill the dead band above the tab pills** `S` - **fixed and deployed 2026-08-26, unseen.**
       `topChain` came back with `anchor:null` (the pill text match failed), so the answer came
@@ -41,14 +50,18 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       should sit ~36px higher with the sidebar, and nothing should be clipped at the top of the
       page. The empty `.epitaxy-titlebar` strip to their right is a separate 32px item, still open.
 
-- [ ] **Sidebar rows lost their project emoji** `M` - reported 2026-08-26: rows read
-      `connoisseurd`, `dogether`, `claude-desktop-tweaks` where the folders on disk are
-      `Connoisseurd 🎨`, `Dogether 🐕`, `Claude Desktop 🤖`. Those labels are not the folder
-      basenames (`claude-desktop-tweaks` is the *repo* name), so the app is naming the row from
-      something other than the path, and `splitEmoji()` - verified against the real folder list,
-      32/32 correct - is not involved. `diag.js` now dumps `sidebarRows` (visible text, the
-      `.df-leading-slot` contents/width, and every `data-*`/`title`/`href` on the row). Open the
-      sidebar, run `window.__ccDump()`, and read the line before writing any fix.
+- [ ] **Sidebar rows lost their project emoji** `M` - **fixed and deployed 2026-08-27, unseen.**
+      Root cause was not emoji handling at all: the app keys a sidebar project group by its git
+      remote when the folder has one (`data-row-key="label:project-behdadmansouri/connoisseurd"`)
+      and by path otherwise, and a remote-keyed group is labelled with the *repo* name. Exactly
+      the five folders with a GitHub remote are affected. `custom-ui/labels.js` appends the
+      folder's emoji to those labels, using a `{"owner/repo": "Folder Name 🎨"}` map that
+      `update-ui.sh` bakes from each folder's `.git/config`. `cc-repo-emoji=0` turns it off.
+      After a restart, `connoisseurd` / `dogether` / `claude-desktop-tweaks` should read
+      `connoisseurd 🎨` / `dogether 🐕` / `claude-desktop-tweaks 🤖`.
+      Open question for the user: the emoji is *appended* to the repo name rather than replacing
+      it with the folder name, on the grounds that the repo name is real information the folder
+      name does not carry. Say so if the full folder name is wanted instead.
 
 - [ ] **Verify the usage chip lands in the composer footer** `S` - the mis-attach is fixed and
       deployed ([issues-fixed.md](memory/issues-fixed.md) #46) but unseen: it was matching a

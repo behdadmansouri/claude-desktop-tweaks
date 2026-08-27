@@ -154,6 +154,7 @@ Electron processes risks LevelDB corruption.
 |------|---------|
 | `custom-ui/css.js` | Base CSS injection (sidebar leading-slot spacing, dark-mode workspace-panel override) |
 | `custom-ui/workspace.js` | The project selector panel: two-pane box sized from the viewport, folder click, pinned markdown preview of any `.md`/`.txt` in the folder (local via IPC, remote via ssh), emoji/short/full name modes, yields to the app's own dialogs, `emojiSuffix`, `_seenDialogs` |
+| `custom-ui/labels.js` | Puts the folder's emoji back on sidebar project groups that the app names after a git remote (`label:project-owner/repo`) instead of after their folder. Map baked from each folder's `.git/config` by `update-ui.sh` as `CC_AI_REPOS`; `cc-repo-emoji=0` disables |
 | `custom-ui/usage.js` | Live usage chip (context / 5-hour / weekly + time to reset). Polls `/api/organizations/<org>/usage` - the app's own tray-usage endpoint - instead of scraping the popover, which is why it can actually stay current. Debug with `window.__ccUsage()`. Endpoint + payload shape: `memory/architecture.md` |
 | `custom-ui/chrome.js` | Hides the in-app top bar (back/forward/search/sidebar-toggle) to reclaim ~44px. Matches on geometry only, never an attribute - and reverts itself if hiding collapses the page's visible text. `window.__ccTopbar.show()` to put it back |
 | `custom-ui/diag.js` | DOM beacon. CDP is blocked, so this is how a selector gets *measured* instead of guessed: one JSON line to the renderer log with usage buttons, top-bar drag regions, what constrains the chat column's width, and any limit nags. `window.__ccDump()`, or automatically 6s after load unless `localStorage['cc-diag']='0'` |
@@ -174,7 +175,7 @@ Electron processes risks LevelDB corruption.
 | `memory/debugging.md` | Console markers, log files, localStorage state, constraints |
 | `memory/design-decisions.md` | Whitelist guards, absolute timestamps, DOM scanner patterns |
 | `memory/maintenance.md` | Deploy workflow, folder renames, AppImage upgrades |
-| `memory/issues-fixed.md` | Bug history (49 entries), each with symptom, root cause, fix and the lesson |
+| `memory/issues-fixed.md` | Bug history (50 entries), each with symptom, root cause, fix and the lesson |
 | `memory/changelog.md` | Dated, append-only record of what shipped, in order. Post-mortems stay in `issues-fixed.md` |
 | `memory/perf-security.md` | Security and performance review |
 | `docs/review-2026-08.md` | Fleet review 2026-08-26: patch brittleness vs upstream, the stranded untrack commit / unpushed-bundle risk, update-path verdict, convention drift |

@@ -29,6 +29,8 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/workspace.js"
   printf '\n'
+  cat "$MODULES_DIR/labels.js"
+  printf '\n'
   cat "$MODULES_DIR/usage.js"
   printf '\n'
   cat "$MODULES_DIR/chrome.js"
@@ -150,11 +152,39 @@ for path in ai_list:
             pass
 print(f"  Baked {len(todos)} TODO.md previews")
 
+# -- Map "owner/repo" to the folder that has it as a remote.
+#    Measured 2026-08-27: the app keys a sidebar project group by its git remote
+#    when the folder has one (data-row-key="label:project-behdadmansouri/dogether")
+#    and by full path when it does not. A remote-keyed group is labelled with the
+#    repo name, which is why exactly the five folders with a GitHub remote lost
+#    the emoji off their name. labels.js needs this to put it back.
+#    .git/config is parsed directly rather than shelling out to git: this heredoc
+#    is unquoted, so every subprocess call is one more chance for bash to eat it.
+repos = {}
+url_re = re.compile(r"url\s*=\s*(\S+)")
+for path in ai_list:
+    cfg = os.path.join(path, ".git", "config")
+    if not os.path.isfile(cfg):
+        continue
+    try:
+        with open(cfg, encoding="utf-8", errors="replace") as cf:
+            for m in url_re.finditer(cf.read()):
+                u = m.group(1)
+                if u.endswith(".git"):
+                    u = u[:-4]
+                parts = [p for p in re.split(r"[:/]", u) if p]
+                if len(parts) >= 2:
+                    repos[parts[-2] + "/" + parts[-1]] = os.path.basename(path)
+    except Exception:
+        pass
+print(f"  Mapped {len(repos)} git remotes to folder names")
+
 with open("$CUSTOM") as f:
     code = f.read()
 
 # Bake CC_AI_LOCAL as a build-time fallback (in case cc-folders.json is missing)
 code = ("const CC_AI_TODOS=" + json.dumps(todos) + ";\n"
+        + "const CC_AI_REPOS=" + json.dumps(repos) + ";\n"
         + "const CC_AI_LOCAL=" + json.dumps(ai_list) + ";\n" + code)
 encoded = json.dumps(code)
 

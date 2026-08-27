@@ -27,7 +27,13 @@ in what order" view.
   KWin owns the frame. `cc-chrome-bar=keep` restores it (issues-fixed #49).
 - **`diag.js` dumps `sidebarRows`** - row text, leading-slot contents and width, and every
   `data-*` on the row - to answer why sidebar rows show `claude-desktop-tweaks` rather than the
-  folder name `Claude Desktop 🤖`. Probe only; no fix yet.
+  folder name `Claude Desktop 🤖`.
+- **Sidebar project groups get their emoji back.** The five folders with a GitHub remote are
+  named by the app after `owner/repo`, not after the folder, which is why only those lost the
+  glyph. `custom-ui/labels.js` appends it, from a remote-to-folder map baked out of each
+  `.git/config` (issues-fixed #50).
+- **`diag.js` gains `findLabels`** - searches the document for text known to be on screen and
+  dumps a slice of its row's markup. Two container-scoped probes had come back with chat titles.
 - **Repo hygiene:** the stranded untrack commit is on `main` (`e219450`), the stale agent worktree
   and its branch are gone, and 18.6 MB of extracted Anthropic bundles are out of the tree. Still
   unpushed.

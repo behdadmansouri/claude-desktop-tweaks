@@ -21,6 +21,9 @@ function scan() {
   // slow enough not to be a hot loop.
   try { dismissLimitNags(); } catch (_) {}
   try { applyTopbar(); } catch (_) {}
+  // Cheap and idempotent: it only writes when a label is missing its glyph, so
+  // riding the existing scan costs nothing and needs no second observer.
+  try { applyProjectLabels(); } catch (_) {}
 
   if (location.pathname !== lastPath) {
     lastPath = location.pathname;

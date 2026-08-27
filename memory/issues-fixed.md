@@ -955,6 +955,39 @@ blind on this build, same as everything `labelsOf()` had to replace.
 
 ---
 
+## 50. Five projects "lost the emoji off their name" - they had stopped being named after their folder (2026-08-27)
+
+**Symptom:** sidebar project groups reading `connoisseurd`, `dogether`, `claude-desktop-tweaks`,
+where the folders on disk are `Connoisseurd 🎨`, `Dogether 🐕`, `Claude Desktop 🤖`. Other projects
+in the same list kept theirs.
+
+**Root cause:** nothing to do with emoji. The app keys a sidebar project group two ways:
+
+    data-row-key="label:project-/home/z3z0/Documents/AI Projects/AI Projects Manager 🛠️"
+    data-row-key="label:project-behdadmansouri/connoisseurd"
+
+A path-keyed group is labelled with the folder's basename; a remote-keyed one with the repo name
+from the folder's git remote. Exactly five folders have a GitHub remote, and they are exactly the
+affected ones. `splitEmoji()` was never in the path - checked against the real folder list first,
+32/32 correct, which is what ruled it out early.
+
+**Fix:** `custom-ui/labels.js` appends the folder's emoji to remote-keyed labels, riding the
+existing 2s scan (idempotent: it writes only when the glyph is missing, so it cannot retrigger the
+observer that called it). Nothing in the DOM maps that row back to a path, so the mapping is baked
+at patch time: `update-ui.sh` parses each folder's `.git/config` into `CC_AI_REPOS` as
+`{"owner/repo": "Folder Name 🎨"}`. Additive by choice - the repo name stays, since it is
+information the folder name does not carry, and rewriting the label would mean fighting React for
+a text node it owns.
+
+**Lesson:** two probes missed this because both assumed a container. `dgSidebarRows()` scoped to
+`.dframe-sidebar` returned 22 chat titles; scoping it document-wide still returned chats, because
+these groups are not `[data-row]` at all. What worked was searching for the *text already known to
+be on screen* and dumping a slice of its row's `outerHTML` - the answer was a `data-row-key`
+attribute no property survey would have thought to report. When a selector-based probe comes back
+empty twice, stop refining the selector and search by content.
+
+---
+
 ## Maintenance note: `custom-ui/workspace.js` contained a literal NUL byte
 
 Until 2026-08-25 the file held `normConn(currentConn || '\x00')` - a sentinel meaning "match
