@@ -18,12 +18,13 @@ staleness warning.
 | **Limit-nag dismissal** (2026-08-18) | "Approaching your weekly limit" toasts get their own close button clicked, so the app remembers. Off with `localStorage['cc-hide-limit-nag']='0'`. |
 | **DOM beacon** (2026-08-18) | `custom-ui/diag.js`. The replacement for CDP, which is still blocked. See [debugging.md](debugging.md). |
 | **Ctrl+Q quit** | Clean shutdown via IPC (channel UUID extracted dynamically at patch time - see `memory/maintenance.md`). Preload-level, not in `custom-ui/`. |
+| **Project emoji on repo-named sidebar groups** (2026-08-27) | The app names a project group after its git remote when the folder has one, so those five folders showed a bare repo name. `custom-ui/labels.js` appends the folder's emoji, from a `{"owner/repo": "Folder Name"}` map `update-ui.sh` bakes out of each `.git/config`. Off with `localStorage['cc-repo-emoji']='0'` |
+| **Session facts** (2026-08-27) | `custom-ui/session.js` + the `cc-session-info` IPC: the project folder, title, model and last-turn token count for the open session, read from the app's own session record and the transcript tail. One cache, shared by the title watcher and the usage chip |
+| **Window title carries the project** (2026-08-27) | `Claude Desktop 🤖 · Conversation name`, so ActivityWatch can attribute time per project instead of seeing only `Code`. Conversation name comes from the session record, not the DOM |
+| **Chrome band reclaimed** (2026-08-27) | `--df-chrome-bar-height` is zeroed: the app reserved 36px for window controls it no longer draws. Back with `localStorage['cc-chrome-bar']='keep'` |
 | **Usage readout** (2026-08-18) | Fixed corner chip: context %, 5-hour %, weekly %, each with time-to-reset. Hover for every bucket the account has. Polls `/api/organizations/<org>/usage` (see [architecture.md](architecture.md#plan-usage-endpoint-2026-08-18-discovery)), so it is genuinely live rather than a snapshot of whatever the popover last showed. `custom-ui/usage.js` |
 
-**Usage caveat:** the plan numbers are API-sourced and always current. The **context window**
-figure has no endpoint - it is only in the popover DOM - so the chip shows `ctx --` until a
-popover happens to expose it. Set `localStorage['cc-usage-probe']='1'` to log candidate API
-payloads while hunting for a better source.
+**Usage caveat (rewritten 2026-08-27):** the plan numbers are API-sourced and always current. The **context window** figure has no endpoint, and the app only publishes it while its own popover is open, so it is now computed from the session transcript instead (`cc-session-info`). The window *size* is not in the transcript: it is learned from the app's own `used / total` when that appears, or derived from a bare percentage plus our token count above 15%, and cached in `cc-usage-ctx-total`. Until it is known the card shows a token count with no percentage, which is the honest reading.
 
 ## Removed 2026-07-12 (verified dead - every call site was already commented out)
 

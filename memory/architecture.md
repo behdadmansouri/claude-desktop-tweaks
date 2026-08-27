@@ -204,6 +204,31 @@ otherwise. Do not "fix" that by opening the popover on a timer - see issues-fixe
 
 ---
 
+## Session facts on disk (2026-08-27 discovery)
+
+The renderer knows the route (`/epitaxy/local_<uuid>`) and nothing else. Everything about *which
+session that is* lives on disk, which is what `cc-session-info` (main process) reads:
+
+```
+<userData>/claude-code-sessions/<org>/<account>/<sessionId>.json
+    {"sessionId":"local_...","cliSessionId":"...","cwd":"/home/.../Claude Desktop 🤖",
+     "title":"...","model":"claude-opus-5", ...}
+
+~/.claude/projects/<slug>/<cliSessionId>.jsonl        the transcript
+```
+
+`<slug>` is the cwd with every character that is not a letter or digit replaced by a dash, per
+UTF-16 code unit - an emoji becomes two dashes, so `Claude Desktop 🤖` ends in three. The handler
+falls back to scanning `~/.claude/projects` when the slug misses.
+
+Context used = the last assistant entry's `usage`: `input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens + output_tokens`. The same arithmetic the CLI shows. No limit is
+recorded there, which is why the window *size* has to be learned rather than assumed.
+
+The sidebar keys a project group by `data-row-key`: `label:project-<path>` for a plain folder,
+`label:project-<owner>/<repo>` when the folder has a git remote. The second form is labelled with
+the repo name, which is why only remote-having folders lost their emoji (see issues-fixed #50).
+
 ## CDP debugging (defunct since v1.9255.0)
 
 **Version 1.9255.0 added a security check:** if `--remote-debugging-port` is in argv without
