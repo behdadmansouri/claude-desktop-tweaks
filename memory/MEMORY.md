@@ -10,6 +10,7 @@
 - [perf-security.md](perf-security.md) - security and performance review
 
 ## Notes
+- [Always push](always-push.md) - finish work by pushing, not just committing; an unpushed branch reads as a Create PR prompt
 - [TODO writing style](todo-writing-style.md) - lead with the action; detail belongs to whoever executes; verification is standing, split by who checks
 - [Claude Desktop Patching State](project_claude_desktop_state.md) - current app version, what works, key gotchas, how to continue
 - [Config symlink gotcha](project_claude_desktop_symlink_gotcha.md) - ~/.config/Claude/custom-ui.js symlink dies silently on folder rename, deploying stale code
