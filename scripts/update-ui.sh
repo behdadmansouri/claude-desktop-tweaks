@@ -31,6 +31,8 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/labels.js"
   printf '\n'
+  cat "$MODULES_DIR/session.js"
+  printf '\n'
   cat "$MODULES_DIR/usage.js"
   printf '\n'
   cat "$MODULES_DIR/chrome.js"
@@ -225,7 +227,8 @@ expose = (
     "sshConfigs:function(){return _ipc.invoke('cc-ssh-configs');},"
     "listTree:function(p,r){return _ipc.invoke('cc-list-tree-v2',p,r);},"
     "listTreeRemote:function(h,p){return _ipc.invoke('cc-list-tree-remote-v2',h,p);},"
-    "setTitle:function(t){return _ipc.invoke('cc-set-title',t);}"
+    "setTitle:function(t){return _ipc.invoke('cc-set-title',t);},"
+    "sessionInfo:function(id){return _ipc.invoke('cc-session-info',id);}"
     "});}catch(_){}"
 )
 
@@ -625,6 +628,83 @@ if "cc-set-title" not in ix:
     print("  Appended cc-set-title ipcMain handler to main bundle")
 else:
     print("  cc-set-title ipcMain handler already present in main bundle")
+
+# ── Session facts the renderer cannot reach.
+#    Two long-running complaints share one cause: the renderer knows the route
+#    (/epitaxy/local_<uuid>) and nothing else. It cannot see which PROJECT the
+#    session belongs to (so the window title, and therefore every ActivityWatch
+#    event, says only "Code"), and it cannot see the token count (so the context
+#    figure only exists while the usage popover is open).
+#
+#    The app writes both facts to disk itself. Each session has a record at
+#    <userData>/claude-code-sessions/<org>/<account>/<sessionId>.json carrying
+#    cwd, cliSessionId, title and model, and cliSessionId names a real transcript
+#    at ~/.claude/projects/<slug>/<cliSessionId>.jsonl whose last assistant entry
+#    carries a usage object. Main process has fs; renderer does not. Hence this.
+#
+#    Cost is bounded: the record is a direct path hit, and the transcript is read
+#    as a tail (400 KB, last 500 lines scanned) rather than parsed whole - these
+#    files run to tens of megabytes on a long session.
+if "cc-session-info" not in ix:
+    sessinfo = (
+        ";(function(){try{var _e=require('electron');"
+        "var _fs=require('fs'),_p=require('path'),_os=require('os');"
+        # Claude Code's project-directory slug is the cwd with every character
+        # that is not a letter or digit replaced by a dash, per UTF-16 code unit
+        # - which is why an emoji folder becomes three dashes, not one.
+        "function _slug(s){var o='';for(var i=0;i<s.length;i++){"
+        "var c=s.charAt(i);o+=(/[A-Za-z0-9]/.test(c)?c:'-');}return o;}"
+        "function _rec(id){"
+        "var base=_p.join(_e.app.getPath('userData'),'claude-code-sessions');"
+        "var l1=[];try{l1=_fs.readdirSync(base);}catch(_){return null;}"
+        "for(var a=0;a<l1.length;a++){var d1=_p.join(base,l1[a]);var l2=[];"
+        "try{l2=_fs.readdirSync(d1);}catch(_){continue;}"
+        "for(var b=0;b<l2.length;b++){var f=_p.join(d1,l2[b],id+'.json');"
+        "try{if(_fs.existsSync(f))return JSON.parse(_fs.readFileSync(f,'utf8'));}catch(_){}}}"
+        "return null;}"
+        # Context = what the model was actually holding on the last turn: fresh
+        # input plus both cache halves plus what it wrote. Same arithmetic the
+        # CLI shows; no limit is recorded here, so the total stays the renderer's
+        # problem (it learns that from the app's own popover once and caches it).
+        "function _ctx(cli,cwd){"
+        "if(!cli)return null;"
+        "var root=_p.join(_os.homedir(),'.claude','projects');var file=null;"
+        "if(cwd){var g=_p.join(root,_slug(cwd),cli+'.jsonl');"
+        "try{if(_fs.existsSync(g))file=g;}catch(_){}}"
+        "if(!file){var ds=[];try{ds=_fs.readdirSync(root);}catch(_){return null;}"
+        "for(var i=0;i<ds.length;i++){var c=_p.join(root,ds[i],cli+'.jsonl');"
+        "try{if(_fs.existsSync(c)){file=c;break;}}catch(_){}}}"
+        "if(!file)return null;"
+        "var st=_fs.statSync(file);var len=Math.min(st.size,400000);"
+        "if(len<=0)return null;"
+        "var fd=_fs.openSync(file,'r');var buf=Buffer.alloc(len);"
+        "_fs.readSync(fd,buf,0,len,st.size-len);_fs.closeSync(fd);"
+        "var lines=buf.toString('utf8').split(String.fromCharCode(10));"
+        "var floor=Math.max(0,lines.length-500);"
+        "for(var j=lines.length-1;j>=floor;j--){var ln=lines[j];"
+        "if(!ln||ln.charAt(0)!=='{')continue;var o=null;"
+        "try{o=JSON.parse(ln);}catch(_){continue;}"
+        "var u=o&&o.message&&o.message.usage;if(!u)continue;"
+        "var used=(u.input_tokens||0)+(u.cache_read_input_tokens||0)"
+        "+(u.cache_creation_input_tokens||0)+(u.output_tokens||0);"
+        "if(used>0)return {used:used,at:o.timestamp||null};}"
+        "return null;}"
+        "_e.ipcMain.handle('cc-session-info',function(ev,id){try{"
+        "if(typeof id!=='string'||!id||id.length>80)return null;"
+        # The id is pasted into a path, so it may only be an id.
+        "if(id.indexOf('/')>=0||id.indexOf('.')>=0)return null;"
+        "var r=_rec(id);if(!r)return null;"
+        "var cwd=r.cwd||r.originCwd||'';var c=null;"
+        "try{c=_ctx(r.cliSessionId,cwd);}catch(_){}"
+        "return {cwd:cwd,project:cwd?_p.basename(cwd):'',title:r.title||'',"
+        "model:r.model||'',ctxUsed:c?c.used:null,ctxAt:c?c.at:null};"
+        "}catch(_){return null;}});}catch(_){}})();\n"
+    )
+    ix = ix + sessinfo
+    ix_changed = True
+    print("  Appended cc-session-info ipcMain handler to main bundle")
+else:
+    print("  cc-session-info ipcMain handler already present in main bundle")
 
 if "cc-open-folder" not in ix:
     opener = (

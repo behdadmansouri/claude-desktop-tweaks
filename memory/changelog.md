@@ -34,9 +34,20 @@ in what order" view.
   `.git/config` (issues-fixed #50).
 - **`diag.js` gains `findLabels`** - searches the document for text known to be on screen and
   dumps a slice of its row's markup. Two container-scoped probes had come back with chat titles.
+- **The window title names the project.** ActivityWatch could only ever see `Code` / `Chat` /
+  `Cowork`, so a week of window-title data could not say which project the time went to. The
+  caption now reads `Claude Desktop 🤖 · Sidebar emoji fix`, project first.
+- **The context figure no longer needs the usage popover open.** It is computed from the
+  session's own transcript instead of scraped: the Code tab is Claude Code, so the last
+  assistant entry's `usage` object is the same arithmetic the CLI shows. The window *size* is
+  still learned from the app rather than assumed, so the percentage appears once the popover has
+  been opened once, and until then the card shows a token count with no percentage.
+- Both of the above come from one new main-process handler, `cc-session-info`, which reads the
+  app's own per-session record (cwd, cliSessionId, title, model) and the transcript tail.
 - **Repo hygiene:** the stranded untrack commit is on `main` (`e219450`), the stale agent worktree
   and its branch are gone, and 18.6 MB of extracted Anthropic bundles are out of the tree. Still
-  unpushed.
+  unpushed. `TODO.md` is open work only again; six finished items were folded into this file, and
+  the KDE-titlebar question is closed (the frame is wanted now).
 
 Confirmed fixed by the user in the same pass, no code of ours involved: the chat column is
 full-width, Cowork no longer shows duplicate close buttons, and the effort selector stays put.

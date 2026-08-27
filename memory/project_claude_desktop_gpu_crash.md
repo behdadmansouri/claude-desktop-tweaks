@@ -1,6 +1,6 @@
 ---
 name: project_claude_desktop_gpu_crash
-description: "Claude Desktop blank/empty page = Chromium GPU process crash (#583); fix is CLAUDE_DISABLE_GPU=1 in the .desktop Exec lines"
+description: "Claude Desktop blank/empty page = Chromium GPU process crash (#583); the launcher now detects it and disables GPU itself"
 metadata: 
   node_type: memory
   type: project
@@ -16,13 +16,14 @@ This is upstream issue #583. On rolling-release Manjaro a Mesa/driver/kernel upd
 can break the old bundled Electron's GPU process even though our patched app binary
 (2.1.149) is unchanged. First hit 2026-07-05.
 
-**Fix:** add `CLAUDE_DISABLE_GPU=1` to the launcher env. The launcher
-(`launcher-common.sh`) honors it and adds `--disable-gpu --disable-software-rasterizer`.
-Applied to BOTH:
-- `~/.local/share/applications/claude-desktop.desktop` (app-menu launch)
-- `~/.config/autostart/claude-desktop.desktop` (login autostart)
-
-Both Exec lines now read `env CLAUDE_USE_WAYLAND=1 CLAUDE_DISABLE_GPU=1 .../AppRun`.
+**Fix: nothing to do by hand any more** (corrected 2026-08-27; this file prescribed the
+manual step for months after it stopped being the answer). The v3.0.0 launcher
+(`launcher-common.sh`) detects that FATAL signature in its own log and disables GPU itself,
+sticky until `CLAUDE_DISABLE_GPU=0`. The blanket `CLAUDE_DISABLE_GPU=1` was therefore removed
+from both Exec lines - verified still absent: they read
+`env CLAUDE_USE_WAYLAND=1 .../AppRun %U` - so acceleration is on by default with automatic
+fallback. Setting it manually is now only a way to force the fallback early. See
+[[project_claude_desktop_state]] and `maintenance.md`.
 
 **How to apply / diagnose:** when the page is blank, check launcher.log for the GPU
 FATAL before assuming custom-ui broke. Confirm the injection is still present with

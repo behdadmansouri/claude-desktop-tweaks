@@ -106,10 +106,41 @@ function twResolve() {
   return { title: '', via: 'none' };
 }
 
+// The project this session belongs to, as "Claude Desktop 🤖".
+//
+// Reported 2026-08-27: ActivityWatch can tell Chat from Code from Cowork and
+// nothing else, so a week of window-title data cannot answer "how long did I
+// spend on Dogether". The conversation title alone does not carry it either -
+// "Planning session" belongs to some project, and the title never says which.
+//
+// The folder basename is used verbatim, emoji included: it is the name every
+// other surface here uses, and it makes the project visible in the caption at a
+// glance as well as greppable in the bucket afterwards.
+function twProject() {
+  const info = ccSessionInfo();
+  if (!info || !info.project) return '';
+  return twClean(info.project);
+}
+
+// "Claude Desktop 🤖 · Sidebar emoji fix". Project first, because a title is
+// clipped from the right by every window list and taskbar there is, and the
+// project is the part worth surviving that clip.
+const TW_SEP = ' · ';
+
 let twLast = '';
 
 function twApply() {
-  const { title } = twResolve();
+  const r = twResolve();
+  let title = r.title;
+  const project = twProject();
+  if (project) {
+    // A conversation title that is only the route fallback ("Project") adds
+    // nothing next to a real project name.
+    title = (title && r.via !== 'route' && title !== project)
+      ? project + TW_SEP + title
+      : project;
+    if (title.length > TW_MAX_LEN) title = title.slice(0, TW_MAX_LEN - 1) + '…';
+  }
   // No candidate: leave whatever is there rather than blanking it.
   if (!title) return;
   if (title === twLast && document.title === twLast) return;
@@ -161,7 +192,10 @@ function twBootstrap() {
   twApply();
 
   window.__ccTitleDebug = function () {
-    const out = { applied: document.title, last: twLast, candidates: {} };
+    const out = {
+      applied: document.title, last: twLast,
+      project: twProject(), session: ccSessionInfo(), candidates: {},
+    };
     for (const [name, fn] of TW_STRATEGIES) {
       try { out.candidates[name] = fn(); } catch (e) { out.candidates[name] = 'ERR ' + e; }
     }

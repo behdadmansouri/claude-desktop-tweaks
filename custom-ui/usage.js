@@ -373,10 +373,51 @@ function cuSchedule() {
 // popover on a timer - that is what broke the effort picker last time.
 function cuSetCtx(pct, used, total) {
   pct = cuPct(pct);
+  if (total) cuLearnTotal(total);
   if (pct == null && used != null && total) pct = cuPct(used / total * 100);
-  if (pct == null) return;
+  // A token count with no denominator is still worth keeping: the hover card
+  // can show "130k" honestly, and the chip's ring simply stays absent rather
+  // than inventing a percentage of an unknown window.
+  if (pct == null && used == null) return;
   cuCtx = {pct, used: used ?? null, total: total ?? null, at: Date.now()};
   cuRender();
+}
+
+// ── the context window's size, learned rather than assumed ──────────────────
+//
+// The transcript records how many tokens the last turn held; it does not record
+// the limit, and the limit moves with the model (200k, 1M with the long-context
+// beta). Guessing it would produce a confidently wrong percentage, which this
+// file has been bitten by before. So: whenever the app's own popover or tray
+// label hands over a real "used / total", the total is remembered, and from
+// then on a fresh token count alone is enough to compute the percentage.
+const CU_CTXTOTAL_KEY = 'cc-usage-ctx-total';
+
+function cuLearnTotal(total) {
+  if (!Number.isFinite(total) || total <= 0) return;
+  try { localStorage.setItem(CU_CTXTOTAL_KEY, String(Math.round(total))); } catch (_) {}
+}
+
+function cuKnownTotal() {
+  try {
+    const v = +localStorage.getItem(CU_CTXTOTAL_KEY);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch (_) { return null; }
+}
+
+// The context figure without the popover: the desktop's Code tab IS Claude
+// Code, so the open session has a real transcript on disk, and its last
+// assistant entry carries the usage object the CLI shows. cc-session-info does
+// the reading; this just decides whether to believe it.
+//
+// Only used when there is no fresher DOM reading, so on the rare occasion the
+// app does publish a number, the app still wins.
+function cuCtxFromSession() {
+  const info = (typeof ccSessionInfo === 'function') ? ccSessionInfo() : null;
+  if (!info || !info.ctxUsed) return false;
+  if (cuCtx && cuCtx.used === info.ctxUsed && !cuCtxStale()) return false;
+  cuSetCtx(null, info.ctxUsed, cuKnownTotal());
+  return true;
 }
 
 // "56.4k / 200.0k (28%)" and friends. Also plain "context 28%".
@@ -833,7 +874,11 @@ function cuCtxStale() {
 
 function cuBucket(key) {
   if (key === 'ctx') {
-    return cuCtxStale() ? null : {pct: cuCtx.pct, resetMs: null};
+    // pct can now be null with `used` known (a token count learned from the
+    // transcript before the window size ever was). The ring has nothing to draw
+    // in that case, so the segment is dropped and the count lives in the card.
+    if (cuCtxStale() || cuCtx.pct == null) return null;
+    return {pct: cuCtx.pct, resetMs: null};
   }
   const b = cuPlan && cuPlan[key];
   if (!b || b.utilization == null) return null;
@@ -918,9 +963,13 @@ function cuRender() {
   };
 
   if (!cuCtxStale()) {
-    const detail = cuCtx.total
-      ? Math.round(cuCtx.used / 1000) + 'k/' + Math.round(cuCtx.total / 1000) + 'k'
-      : null;
+    const detail = cuCtx.used == null
+      ? null
+      : cuCtx.total
+        ? Math.round(cuCtx.used / 1000) + 'k/' + Math.round(cuCtx.total / 1000) + 'k'
+        // No window size learned yet: the count is real, the percentage is not
+        // knowable, and saying so beats implying a denominator.
+        : Math.round(cuCtx.used / 1000) + 'k used';
     addRow('Context window', cuCtx.pct, null, detail);
   } else {
     addRow('Context window', null, null, cuCtx ? 'stale' : 'n/a');
@@ -982,7 +1031,7 @@ function installUsage() {
     if (location.pathname !== cuPath) { cuPath = location.pathname; cuCtx = null; }
     if (!cuRoot || !cuRoot.isConnected) cuInstall();
     try { cuPlace(); } catch (_) {}
-    try { cuScanContext(); } catch (_) {}
+    try { if (!cuScanContext()) cuCtxFromSession(); } catch (_) {}
     cuInvalidateRect();
     cuRender();
   }, CU_TICK_MS);

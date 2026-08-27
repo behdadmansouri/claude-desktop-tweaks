@@ -2304,6 +2304,75 @@ function applyProjectLabels() {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  SESSION FACTS
+//  What the current route is actually a session OF - project folder, title,
+//  model, and how many tokens the last turn was holding.
+// ─────────────────────────────────────────────────────────────
+//
+// The renderer knows `/epitaxy/local_<uuid>` and nothing else, which is the
+// single cause behind two separate long-standing complaints: the window title
+// (and so every ActivityWatch event) can only ever say "Code", and the context
+// figure exists only while the usage popover is open.
+//
+// The app writes both facts to disk. `cc-session-info` in the main process
+// reads them; this is the renderer half - one cache, so the title watcher and
+// the usage chip do not each pay for the same lookup on their own timers.
+//
+// Deliberately synchronous-with-stale-data: callers run on 3s/20s ticks and
+// want an answer now, not a promise. The first call after a route change
+// returns null and starts a fetch; the next tick has it.
+
+const SI_TTL_MS = 15000;
+// "/epitaxy/local_3b5ee74f-…" - the last segment, when it looks like an id
+// rather than a page name. Kept loose on the prefix: local_ is what a local
+// session uses today, and a remote one should not need a code change here.
+const SI_ID_RE = /^[a-z]+_[0-9a-f][0-9a-f-]{7,}$/i;
+
+let _siId = null;
+let _siData = null;
+let _siAt = 0;
+let _siPending = false;
+
+function ccSessionId() {
+  const parts = (location.pathname || '').split('/').filter(Boolean);
+  const last = parts.length ? parts[parts.length - 1] : '';
+  return SI_ID_RE.test(last) ? last : '';
+}
+
+// The cached record, or null while one is being fetched (or when the route is
+// not a session at all). Never throws, never blocks.
+function ccSessionInfo() {
+  const id = ccSessionId();
+  if (!id) return null;
+  if (id !== _siId) { _siId = id; _siData = null; _siAt = 0; }
+
+  const now = Date.now();
+  if (!_siPending && now - _siAt > SI_TTL_MS) {
+    const bridge = window.ccBridge;
+    if (bridge && bridge.sessionInfo) {
+      _siPending = true;
+      try {
+        bridge.sessionInfo(id).then(d => {
+          // Guard against a reply landing after the route already moved on -
+          // showing one session's token count under another session's name is
+          // exactly the failure the usage chip's route check exists to prevent.
+          if (_siId === id) { _siData = d || null; _siAt = Date.now(); }
+          _siPending = false;
+        }).catch(() => { _siPending = false; _siAt = Date.now(); });
+      } catch (_) {
+        _siPending = false;
+        _siAt = now;
+      }
+    } else {
+      // No bridge (an unpatched main process, or an older patch): stop asking
+      // every tick.
+      _siAt = now;
+    }
+  }
+  return _siData;
+}
+
+// ─────────────────────────────────────────────────────────────
 //  USAGE READOUT
 //  Live 5-hour / weekly plan usage + context window, in a fixed corner chip.
 //
@@ -2678,10 +2747,51 @@ function cuSchedule() {
 // popover on a timer - that is what broke the effort picker last time.
 function cuSetCtx(pct, used, total) {
   pct = cuPct(pct);
+  if (total) cuLearnTotal(total);
   if (pct == null && used != null && total) pct = cuPct(used / total * 100);
-  if (pct == null) return;
+  // A token count with no denominator is still worth keeping: the hover card
+  // can show "130k" honestly, and the chip's ring simply stays absent rather
+  // than inventing a percentage of an unknown window.
+  if (pct == null && used == null) return;
   cuCtx = {pct, used: used ?? null, total: total ?? null, at: Date.now()};
   cuRender();
+}
+
+// ── the context window's size, learned rather than assumed ──────────────────
+//
+// The transcript records how many tokens the last turn held; it does not record
+// the limit, and the limit moves with the model (200k, 1M with the long-context
+// beta). Guessing it would produce a confidently wrong percentage, which this
+// file has been bitten by before. So: whenever the app's own popover or tray
+// label hands over a real "used / total", the total is remembered, and from
+// then on a fresh token count alone is enough to compute the percentage.
+const CU_CTXTOTAL_KEY = 'cc-usage-ctx-total';
+
+function cuLearnTotal(total) {
+  if (!Number.isFinite(total) || total <= 0) return;
+  try { localStorage.setItem(CU_CTXTOTAL_KEY, String(Math.round(total))); } catch (_) {}
+}
+
+function cuKnownTotal() {
+  try {
+    const v = +localStorage.getItem(CU_CTXTOTAL_KEY);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch (_) { return null; }
+}
+
+// The context figure without the popover: the desktop's Code tab IS Claude
+// Code, so the open session has a real transcript on disk, and its last
+// assistant entry carries the usage object the CLI shows. cc-session-info does
+// the reading; this just decides whether to believe it.
+//
+// Only used when there is no fresher DOM reading, so on the rare occasion the
+// app does publish a number, the app still wins.
+function cuCtxFromSession() {
+  const info = (typeof ccSessionInfo === 'function') ? ccSessionInfo() : null;
+  if (!info || !info.ctxUsed) return false;
+  if (cuCtx && cuCtx.used === info.ctxUsed && !cuCtxStale()) return false;
+  cuSetCtx(null, info.ctxUsed, cuKnownTotal());
+  return true;
 }
 
 // "56.4k / 200.0k (28%)" and friends. Also plain "context 28%".
@@ -3138,7 +3248,11 @@ function cuCtxStale() {
 
 function cuBucket(key) {
   if (key === 'ctx') {
-    return cuCtxStale() ? null : {pct: cuCtx.pct, resetMs: null};
+    // pct can now be null with `used` known (a token count learned from the
+    // transcript before the window size ever was). The ring has nothing to draw
+    // in that case, so the segment is dropped and the count lives in the card.
+    if (cuCtxStale() || cuCtx.pct == null) return null;
+    return {pct: cuCtx.pct, resetMs: null};
   }
   const b = cuPlan && cuPlan[key];
   if (!b || b.utilization == null) return null;
@@ -3223,9 +3337,13 @@ function cuRender() {
   };
 
   if (!cuCtxStale()) {
-    const detail = cuCtx.total
-      ? Math.round(cuCtx.used / 1000) + 'k/' + Math.round(cuCtx.total / 1000) + 'k'
-      : null;
+    const detail = cuCtx.used == null
+      ? null
+      : cuCtx.total
+        ? Math.round(cuCtx.used / 1000) + 'k/' + Math.round(cuCtx.total / 1000) + 'k'
+        // No window size learned yet: the count is real, the percentage is not
+        // knowable, and saying so beats implying a denominator.
+        : Math.round(cuCtx.used / 1000) + 'k used';
     addRow('Context window', cuCtx.pct, null, detail);
   } else {
     addRow('Context window', null, null, cuCtx ? 'stale' : 'n/a');
@@ -3287,7 +3405,7 @@ function installUsage() {
     if (location.pathname !== cuPath) { cuPath = location.pathname; cuCtx = null; }
     if (!cuRoot || !cuRoot.isConnected) cuInstall();
     try { cuPlace(); } catch (_) {}
-    try { cuScanContext(); } catch (_) {}
+    try { if (!cuScanContext()) cuCtxFromSession(); } catch (_) {}
     cuInvalidateRect();
     cuRender();
   }, CU_TICK_MS);
@@ -3834,10 +3952,41 @@ function twResolve() {
   return { title: '', via: 'none' };
 }
 
+// The project this session belongs to, as "Claude Desktop 🤖".
+//
+// Reported 2026-08-27: ActivityWatch can tell Chat from Code from Cowork and
+// nothing else, so a week of window-title data cannot answer "how long did I
+// spend on Dogether". The conversation title alone does not carry it either -
+// "Planning session" belongs to some project, and the title never says which.
+//
+// The folder basename is used verbatim, emoji included: it is the name every
+// other surface here uses, and it makes the project visible in the caption at a
+// glance as well as greppable in the bucket afterwards.
+function twProject() {
+  const info = ccSessionInfo();
+  if (!info || !info.project) return '';
+  return twClean(info.project);
+}
+
+// "Claude Desktop 🤖 · Sidebar emoji fix". Project first, because a title is
+// clipped from the right by every window list and taskbar there is, and the
+// project is the part worth surviving that clip.
+const TW_SEP = ' · ';
+
 let twLast = '';
 
 function twApply() {
-  const { title } = twResolve();
+  const r = twResolve();
+  let title = r.title;
+  const project = twProject();
+  if (project) {
+    // A conversation title that is only the route fallback ("Project") adds
+    // nothing next to a real project name.
+    title = (title && r.via !== 'route' && title !== project)
+      ? project + TW_SEP + title
+      : project;
+    if (title.length > TW_MAX_LEN) title = title.slice(0, TW_MAX_LEN - 1) + '…';
+  }
   // No candidate: leave whatever is there rather than blanking it.
   if (!title) return;
   if (title === twLast && document.title === twLast) return;
@@ -3889,7 +4038,10 @@ function twBootstrap() {
   twApply();
 
   window.__ccTitleDebug = function () {
-    const out = { applied: document.title, last: twLast, candidates: {} };
+    const out = {
+      applied: document.title, last: twLast,
+      project: twProject(), session: ccSessionInfo(), candidates: {},
+    };
     for (const [name, fn] of TW_STRATEGIES) {
       try { out.candidates[name] = fn(); } catch (e) { out.candidates[name] = 'ERR ' + e; }
     }

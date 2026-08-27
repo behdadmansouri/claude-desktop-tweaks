@@ -6,14 +6,6 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## ⚡ Next up
 
-- [x] **Merge the stranded untrack commit before any push** - done 2026-08-26. Cherry-picked as
-      `e219450` (one `.gitignore` conflict, both hunks kept), worktree removed, branch
-      `claude/blissful-noether-bd840c` deleted. `index.js` / `index.chunk-*.js` are untracked
-      *and* gone from the working tree - re-extract from the asar if one is ever needed again.
-      The push itself is still unmade and still the user's call.
-
-- [x] **Commit the in-flight #46 work** - done 2026-08-26 as part of `244925f`; tree is clean.
-
 - [ ] **Rewrite the `update-claude-desktop` skill** `S` - `~/.claude/skills/update-claude-desktop/SKILL.md`
       (frozen 2026-07-24) still drives `update-appimage.sh`, dead since the AUR removal, and
       knows nothing of `claude-ctl`, `--official`, or the autoupdate timer. A cold agent
@@ -25,52 +17,36 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       `claude-desktop-extra` is 1.30096.1. Pick a new base and rework the script:
       [memory/maintenance.md](memory/maintenance.md) has the option comparison.
 
-- [ ] **Usage chip shows `ctx --`** `M` - the 5-hour and weekly numbers are live off
-      `/api/organizations/<org>/usage`, but the context window has no endpoint and is only in the
-      usage popover's DOM, so it reads as unknown most of the time. Next step: run with
-      `localStorage['cc-usage-probe']='1'` and watch `[cc-usage-probe]` in the console for an API
-      payload that carries a token count. Do **not** re-add a timer that opens the popover
-      ([issues-fixed.md](memory/issues-fixed.md) #13).
-      **Narrowed 2026-08-27** (still reported as "I have to click usage to make the context
-      appear"): the app's own tray button *does* carry it - `aria-label="Usage: context 13%,
-      plan 7%"` - and `cuScanContext()` step 1 already reads exactly that, no change needed
-      there. The gap is upstream of us: three dumps, three different labels. `Usage: plan 3%`
-      and `Usage: context 0, plan 83%` with the popover shut, the real number only in the dump
-      taken while it was open. So the app populates its own label when the popover renders and
-      lets it go stale otherwise. Next candidate is not the DOM at all: the transcript is a
-      `.jsonl` under `~/.claude/projects/<slug>/` and the bridge already reads files, so the
-      token count could be computed rather than scraped.
+- [ ] **Verify the context figure without clicking usage** `M` - **built and deployed 2026-08-27,
+      unseen.** Reported twice: the number only appears after opening the usage popover, because
+      the app fills its own tray label when that popover renders and lets it go stale otherwise
+      (three dumps, three labels: `Usage: plan 3%`, `context 0`, and the real 13% only while it
+      was open). Scraping harder cannot fix that, so the number is now *computed*: the Code tab
+      is Claude Code, so the open session has a real transcript, and `cc-session-info` reads the
+      last assistant entry's `usage` object out of it. Verified offline against this very
+      session before deploying (207,981 tokens, transcript resolved via the folder slug).
+      The **denominator is learned, never guessed** - the transcript records no limit and it
+      moves with the model, so the window size is remembered from the app's own popover the
+      first time it is seen (`cc-usage-ctx-total`). Until then the hover card shows `208k used`
+      with no percentage and the chip drops the ring, which is the honest reading; open the
+      popover once and the percentage works from then on. Do **not** re-add a timer that opens
+      the popover ([issues-fixed.md](memory/issues-fixed.md) #13).
 
-- [x] **Kill the dead band above the tab pills** - **confirmed by the user 2026-08-27.**
-      `topChain` came back with `anchor:null` (the pill text match failed), so the answer came
-      from the app's own stylesheet instead: `.dframe-root[data-wco]{--df-chrome-bar-height:36px}`,
-      consumed only by `.dframe-content{padding-top}` and `.dframe-sidebar{top:calc(8px + …)}` -
-      the same two paddings the user had already removed by hand. `css.js` now zeroes that
-      variable; `localStorage['cc-chrome-bar']='keep'` puts it back. After a restart the pills
-      should sit ~36px higher with the sidebar, and nothing should be clipped at the top of the
-      page. The empty `.epitaxy-titlebar` strip to their right is a separate 32px item, still open.
-
-- [x] **Sidebar rows lost their project emoji** - **confirmed by the user 2026-08-27.**
-      Root cause was not emoji handling at all: the app keys a sidebar project group by its git
-      remote when the folder has one (`data-row-key="label:project-behdadmansouri/connoisseurd"`)
-      and by path otherwise, and a remote-keyed group is labelled with the *repo* name. Exactly
-      the five folders with a GitHub remote are affected. `custom-ui/labels.js` appends the
-      folder's emoji to those labels, using a `{"owner/repo": "Folder Name 🎨"}` map that
-      `update-ui.sh` bakes from each folder's `.git/config`. `cc-repo-emoji=0` turns it off.
-      The label reads `connoisseurd 🎨`, i.e. the emoji is *appended* to the repo name rather than
-      replacing it with the folder name - the repo name is information the folder name does not
-      carry. Left as-is with no objection raised; swapping to the full folder name is a one-line
-      change in `labels.js` if it ever comes up.
+- [ ] **Verify the window title names the project** `M` - **built and deployed 2026-08-27,
+      unseen.** Reported: ActivityWatch can tell Chat from Code from Cowork and nothing else, so
+      the data cannot answer "how long did I spend on Dogether". Same root cause as the item
+      above - the renderer only knows the route - and the same fix: `cc-session-info` returns the
+      session's `cwd`, and `titlewatch.js` puts the folder name first, as
+      `Claude Desktop 🤖 · Sidebar emoji fix`. Project first because every taskbar clips a title
+      from the right. Check with `window.__ccTitleDebug()` (it now reports `project` and the
+      whole session record), and confirm in ActivityWatch that the window bucket carries the
+      folder name rather than `Code`.
 
 - [ ] **Verify the usage chip lands in the composer footer** `S` - the mis-attach is fixed and
       deployed ([issues-fixed.md](memory/issues-fixed.md) #46) but unseen: it was matching a
       session row's "More options for ... and pla**nning**" button. After a restart the chip
       should sit inline next to Opus 5 / Medium with the app's own ring collapsed, and no session
       row should have text painted over it. `window.__ccUsage().attachedTo` names the match.
-
-- [x] **Verify the open-TODO badge is readable** - **confirmed by the user 2026-08-27.** The digit
-      had been inheriting the same colour as its own ground; both halves are fixed theme pairs now
-      ([issues-fixed.md](memory/issues-fixed.md) #48).
 
 - [ ] **Catch the "Capturing" inhibitor in the act** `S` - it is **not** permanent. A live check
       (`claude-ctl` prints the list) found only the Electron `powerSaveBlocker` and Chromium
@@ -85,13 +61,7 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
 
 ## 🤔 Needs your call
 
-- [ ] **KDE titlebar no longer hidden** `S` - a manual System Settings step, not a code change.
-      Window Management → Window Rules → Add → focus Claude Desktop → "Detect Window Properties"
-      → set "No titlebar and frame" → Force → Yes. Why it broke: the GPU-crash fix (#17) added
-      `CLAUDE_USE_WAYLAND=1`, turning the app from an XWayland client into a native-Wayland one.
-      KWin matches native Wayland windows by `app_id`, not X11 `WM_CLASS`, so any rule keyed on
-      the old class silently stopped matching. No `~/.config/kwinrulesrc` exists on this system
-      at all, so a rule likely was never saved in the first place.
+(nothing waiting on you right now)
 
 ## 📋 Backlog
 
@@ -105,23 +75,12 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       Needs a grep pass, not just `git mv`: the skill, `memory/*.md`, and scripts reference the
       name. 🤖
 
-- [ ] **Memory hygiene pass** `S` - `project_claude_desktop_gpu_crash.md` still prescribes
-      `CLAUDE_DISABLE_GPU=1`, which maintenance.md says was removed; `MEMORY.md` says issues
-      "#1-40" vs actual #47; no `USAGE.md` despite `claude-ctl`/timer being operable tooling.
-      Done 2026-08-26: `memory/changelog.md` created, CLAUDE.md registry corrected, flat-memory
-      exception documented. 🤖
-
-- [x] **Bring `titlewatch.js` to the official app, or don't** `M` - done 2026-08-25, and the whole
-      custom UI came with it rather than titlewatch alone. `update-ui.sh --official` patches
-      `~/.local/lib/claude-desktop-official`; everything is located by content signature, so no
-      version pinning was needed. Caveat: `install-official.sh` replaces the whole prefix, so
-      re-run the patch after every official update. Not yet applied - there is a pending update
-      (1.26832.0 → 1.34493.1), so install that first.
-      **Confirmed still live 2026-08-26, cross-project** (Time Management project, from
-      ActivityWatch's own window-title data): the running app's window still reports app id
-      `Claude`, title `Code` (plus a Nerd Font glyph) for ~95 of the last 600 minutes - a generic,
-      non-enriched title, exactly the symptom this item exists to fix. Not new information, just a
-      live data point that the fix genuinely hasn't reached the running app yet.
+- [ ] **A `USAGE.md` for the operable tooling** `S` - `claude-ctl`, the autoupdate timer and
+      `share-sessions.sh` are things you *run*, and their documentation is spread across
+      CLAUDE.md's registry and `maintenance.md`. The rest of the hygiene pass is finished: the
+      changelog exists, the registry is correct, the issue counts match, and
+      `project_claude_desktop_gpu_crash.md` no longer prescribes the `CLAUDE_DISABLE_GPU=1` step
+      that the v3.0.0 launcher made unnecessary (corrected 2026-08-27). 🤖
 
 - [ ] **Decide whether the official build should share the session index** `S` - the script exists
       (`scripts/share-sessions.sh`, `--undo` to reverse) but has not been run. It symlinks only
