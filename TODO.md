@@ -41,7 +41,7 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       `.jsonl` under `~/.claude/projects/<slug>/` and the bridge already reads files, so the
       token count could be computed rather than scraped.
 
-- [ ] **Kill the dead band above the tab pills** `S` - **fixed and deployed 2026-08-26, unseen.**
+- [x] **Kill the dead band above the tab pills** - **confirmed by the user 2026-08-27.**
       `topChain` came back with `anchor:null` (the pill text match failed), so the answer came
       from the app's own stylesheet instead: `.dframe-root[data-wco]{--df-chrome-bar-height:36px}`,
       consumed only by `.dframe-content{padding-top}` and `.dframe-sidebar{top:calc(8px + …)}` -
@@ -50,18 +50,17 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       should sit ~36px higher with the sidebar, and nothing should be clipped at the top of the
       page. The empty `.epitaxy-titlebar` strip to their right is a separate 32px item, still open.
 
-- [ ] **Sidebar rows lost their project emoji** `M` - **fixed and deployed 2026-08-27, unseen.**
+- [x] **Sidebar rows lost their project emoji** - **confirmed by the user 2026-08-27.**
       Root cause was not emoji handling at all: the app keys a sidebar project group by its git
       remote when the folder has one (`data-row-key="label:project-behdadmansouri/connoisseurd"`)
       and by path otherwise, and a remote-keyed group is labelled with the *repo* name. Exactly
       the five folders with a GitHub remote are affected. `custom-ui/labels.js` appends the
       folder's emoji to those labels, using a `{"owner/repo": "Folder Name 🎨"}` map that
       `update-ui.sh` bakes from each folder's `.git/config`. `cc-repo-emoji=0` turns it off.
-      After a restart, `connoisseurd` / `dogether` / `claude-desktop-tweaks` should read
-      `connoisseurd 🎨` / `dogether 🐕` / `claude-desktop-tweaks 🤖`.
-      Open question for the user: the emoji is *appended* to the repo name rather than replacing
-      it with the folder name, on the grounds that the repo name is real information the folder
-      name does not carry. Say so if the full folder name is wanted instead.
+      The label reads `connoisseurd 🎨`, i.e. the emoji is *appended* to the repo name rather than
+      replacing it with the folder name - the repo name is information the folder name does not
+      carry. Left as-is with no objection raised; swapping to the full folder name is a one-line
+      change in `labels.js` if it ever comes up.
 
 - [ ] **Verify the usage chip lands in the composer footer** `S` - the mis-attach is fixed and
       deployed ([issues-fixed.md](memory/issues-fixed.md) #46) but unseen: it was matching a
@@ -69,11 +68,9 @@ Feature status lives in [memory/features.md](memory/features.md), bug history in
       should sit inline next to Opus 5 / Medium with the app's own ring collapsed, and no session
       row should have text painted over it. `window.__ccUsage().attachedTo` names the match.
 
-- [ ] **Verify the open-TODO badge is readable** `S` - fixed and deployed 2026-08-26 (the digit
-      was inheriting the same colour as its own ground; see the commit and
-      [issues-fixed.md](memory/issues-fixed.md) #47). After a restart the tile dot should be
-      terracotta with a cream number in light mode and amber with a dark number in dark mode, and
-      the named-mode pill's number should be full strength at every count.
+- [x] **Verify the open-TODO badge is readable** - **confirmed by the user 2026-08-27.** The digit
+      had been inheriting the same colour as its own ground; both halves are fixed theme pairs now
+      ([issues-fixed.md](memory/issues-fixed.md) #48).
 
 - [ ] **Catch the "Capturing" inhibitor in the act** `S` - it is **not** permanent. A live check
       (`claude-ctl` prints the list) found only the Electron `powerSaveBlocker` and Chromium
