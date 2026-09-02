@@ -13,9 +13,6 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 - [ ] 🤖 **Rewrite the `update-claude-desktop` skill** `S` - it drives a dead script. Do it with
       the decision above.
 
-- [ ] 🤖 **Tell me when an official re-patch fails** `S` - today it fails silently and the build
-      runs unpatched. Send it through Hermes.
-
 ## 🔍 Verification
 
 Standing checks, not tasks. They move to the changelog once they have held up for a few days.
@@ -29,4 +26,5 @@ Standing checks, not tasks. They move to the changelog once they have held up fo
       the conversation half is not.
 
 - [ ] 🤖 **The official build is still patched after it updates** - its installer replaces the
-      whole prefix. `claude-ctl` reports it.
+      whole prefix, and now re-patches itself; `claude-ctl` reports all four main-process patches
+      per build. Unverified until the 1.40609.1 update actually runs.

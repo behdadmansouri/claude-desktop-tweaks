@@ -23,6 +23,7 @@ mkdir -p "$CACHE_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PATCHED_ASAR="$HOME/.local/lib/claude-desktop-patched/usr/lib/claude-desktop/resources/app.asar"
+OFFICIAL_ASAR="$HOME/.local/lib/claude-desktop-official/usr/lib/claude-desktop/resources/app.asar"
 OFFICIAL_STAMP="$HOME/.local/lib/claude-desktop-official/.installed-version"
 REPO="https://downloads.claude.ai/claude-desktop/apt/stable"
 
@@ -84,15 +85,25 @@ fi
 # The single most common way this project breaks is editing custom-ui/ and
 # forgetting to re-run update-ui.sh, which looks exactly like "the fix didn't
 # work". Comparing mtimes catches it for free.
-if [[ -f "$PATCHED_ASAR" ]]; then
-  newest="$(find "$PROJECT_DIR/custom-ui" "$SCRIPT_DIR/update-ui.sh" -type f -newer "$PATCHED_ASAR" 2>/dev/null | head -5)"
+# Checked for both builds since the official one became a daily driver too: it
+# is the build whose patch actually disappears on its own, because its installer
+# replaces the entire prefix.
+for build in patched official; do
+  if [[ $build == patched ]]; then asar="$PATCHED_ASAR"; flag=""
+  else                             asar="$OFFICIAL_ASAR"; flag=" --official"; fi
+  [[ -f "$asar" ]] || continue
+  if ! grep -qa 'cc-ai-data-v2' "$asar" 2>/dev/null; then
+    out+=("patch[$build]: MISSING - the deployed asar carries no custom UI - ./scripts/update-ui.sh$flag")
+    continue
+  fi
+  newest="$(find "$PROJECT_DIR/custom-ui" "$SCRIPT_DIR/update-ui.sh" -type f -newer "$asar" 2>/dev/null | head -5)"
   if [[ -n "$newest" ]]; then
     n="$(printf '%s\n' "$newest" | wc -l)"
-    out+=("patch: STALE - $n source file(s) newer than the deployed asar - ./scripts/update-ui.sh")
+    out+=("patch[$build]: STALE - $n source file(s) newer than the deployed asar - ./scripts/update-ui.sh$flag")
   else
-    out+=("patch: deployed asar is up to date with custom-ui/")
+    out+=("patch[$build]: deployed asar is up to date with custom-ui/")
   fi
-fi
+done
 
 {
   printf 'claude-desktop update check - %s\n' "$(date '+%Y-%m-%d %H:%M')"

@@ -47,7 +47,19 @@ cleanup() { [[ -n "$WORKDIR" ]] && rm -rf "$WORKDIR"; return 0; }
 trap cleanup EXIT
 
 FORCE=0
-[[ "${1:-}" == "--force" ]] && FORCE=1
+# The custom UI is re-applied by default. This script replaces the whole prefix,
+# so an update always wipes it; leaving that to a separate manual step is what
+# made the official build silently run unpatched for weeks.
+PATCH=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)    FORCE=1; shift ;;
+    --no-patch) PATCH=0; shift ;;
+    -h|--help)  echo "usage: $0 [--force] [--no-patch]"; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2
+       echo "usage: $0 [--force] [--no-patch]" >&2; exit 1 ;;
+  esac
+done
 
 # --- 1. Resolve the newest package in the pool -------------------------------
 echo "→ Querying Anthropic's apt repository index ($DEB_ARCH)..."
@@ -212,6 +224,26 @@ echo "  Prefix:    $PREFIX"
 echo "  Profile:   $USERDATA   (separate from the patched app's ~/.config/Claude)"
 echo "  Launch:    $LAUNCHER   (or 'Claude (Official)' in your app menu)"
 echo
+
+# --- 7. Re-apply the custom UI ----------------------------------------------
+# Step 3 wrote a pristine app.asar over the patched one, so this is not
+# optional maintenance: without it the app you just installed has no project
+# panel, no usage chip and no window title. Failure is announced rather than
+# swallowed - an unpatched build looks completely normal until you go looking
+# for a feature that is missing.
+if [[ $PATCH -eq 1 ]]; then
+  echo "→ Re-applying the custom UI..."
+  if "$(dirname "$(readlink -f "$0")")/update-ui.sh" --official; then
+    echo "✓ Custom UI re-applied."
+  else
+    echo "✗ CUSTOM UI RE-PATCH FAILED - the official build is running unpatched." >&2
+    echo "  Re-run by hand: scripts/update-ui.sh --official" >&2
+    command -v notify-send >/dev/null 2>&1 && notify-send -u critical \
+      "Claude Desktop: re-patch failed" \
+      "Official build $VERSION installed but UNPATCHED. Run scripts/update-ui.sh --official." || true
+    exit 1
+  fi
+fi
 
 # Cowork's VM detection probes hardcoded Debian paths. Report, don't fix:
 # creating these needs root, so leave it to the user.

@@ -283,23 +283,93 @@ print(f"  Embedded {len(code)} bytes of custom-ui.js")
 #    the original form, so re-runs are no-ops on an already-patched bundle; a
 #    fresh extract reintroduces the original code and gets re-patched.
 main_path = "$MAIN_BUNDLE"
-with open(main_path) as f:
-    ix = f.read()
+BUILD_DIR = os.path.dirname(main_path)
 
+# -- Patching across chunks, and across quote styles. --------------------------
+#
+#    Two things stopped being safe assumptions with the official 1.26832.0 build
+#    (measured 2026-09-01, all four main-process patches missed at once):
+#
+#      1. ONE CHUNK. Everything we patch used to sit in the same chunk that
+#         registers browseFolder. It no longer does: the folder-picker default
+#         path, the window frame and the keep-awake claim each live in a
+#         different chunk now. So a site is located by CONTENT across every
+#         chunk, and only the appended ipcMain handlers still go to a fixed
+#         file (any main-process chunk would do for those; MAIN_BUNDLE is
+#         chosen because locating it already proves it is main-process code).
+#
+#      2. DOUBLE QUOTES. This build's minifier emits template literals where
+#         the old one emitted "..." - titleBarStyle:BThiddenBT, not
+#         titleBarStyle:"hidden". Nothing here may hard-code a quote character;
+#         use QUOTE, which matches either.
+#
+#    A literal backtick cannot appear anywhere in this heredoc (it is UNQUOTED,
+#    so bash would run it as a command), hence chr(96).
+BT = chr(96)
+QUOTE = "[" + chr(34) + BT + "]"
+
+import glob
+
+_text = {}
+_dirty = set()
+
+def rd(path):
+    # errors="surrogateescape" so a chunk carrying a stray byte round-trips
+    # unchanged instead of raising or being silently mangled.
+    if path not in _text:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            _text[path] = f.read()
+    return _text[path]
+
+def wr(path, body):
+    _text[path] = body
+    _dirty.add(path)
+
+def all_chunks():
+    rest = sorted(p for p in glob.glob(os.path.join(BUILD_DIR, "*.js"))
+                  if p != main_path)
+    return [main_path] + rest
+
+def patch_every(pattern, repl, what, guard=None):
+    # Applies to EVERY chunk that matches, not the first one found. A site that
+    # moved chunks between releases is now the normal case; a site that exists
+    # in two chunks at once is not, and shows up here as a total > 1 rather
+    # than being silently half-patched.
+    if guard is not None:
+        for path in all_chunks():
+            if guard in rd(path):
+                print("  " + what + " already patched")
+                return -1
+    rx = re.compile(pattern)
+    hits = 0
+    for path in all_chunks():
+        body, n = rx.subn(repl, rd(path))
+        if n:
+            wr(path, body)
+            hits += n
+            print("  Patched " + what + " in " + os.path.basename(path)
+                  + " (" + str(n) + " site(s))")
+    if not hits:
+        print("  WARNING: " + what + " not found - left unpatched")
+    return hits
+
+# ── Folder-picker default. Two shapes seen so far:
+#      defaultPath:e??s.homedir()        1.24012.9
+#      defaultPath:t??(0,k.homedir)()    1.26832.0 (rollup interop call form)
+#    Both end up wrapped in the same concatenation. Idempotent: once wrapped,
+#    the pattern no longer matches its own output.
+_ident = re.escape(D) + r"?\w+"
+_homedir = "((?:" + _ident + r"\.homedir\(\)|\(0,\s*" + _ident + r"\.homedir\)\(\)))"
+patch_every(
+    r'defaultPath:(\w+)\?\?' + _homedir,
+    lambda m: ('defaultPath:' + m.group(1) + '??(' + m.group(2)
+               + '+"/Documents/AI Projects")'),
+    "folder-picker defaultPath")
+
+# Everything below appends to the main bundle. Read it AFTER the cross-chunk
+# passes above, so an edit landing in this same file is not thrown away.
+ix = rd(main_path)
 ix_changed = False
-
-# defaultPath:<var>??<homedirExpr>.homedir()  - homedirExpr may be a bare
-# identifier ("s") or a member/import alias ("\$t"); handle both.
-defaultpath_pattern = re.compile(r'defaultPath:(\w+)\?\?(\\\$?\w+)\.homedir\(\)')
-def _defaultpath_repl(m):
-    var, homedir_expr = m.group(1), m.group(2)
-    return f'defaultPath:{var}??({homedir_expr}.homedir()+"/Documents/AI Projects")'
-ix, n = defaultpath_pattern.subn(_defaultpath_repl, ix)
-if n:
-    ix_changed = True
-    print(f"  Patched folder-picker defaultPath in main bundle ({n} site(s))")
-else:
-    print("  Main bundle folder-picker defaultPath already patched or not found")
 
 # ── Append a self-contained ipcMain handler that reads ~/Documents/AI Projects
 #    live at runtime: folder list + each folder's TODO.md. The renderer invokes
@@ -351,22 +421,49 @@ if "cc-arm-folder" not in ix:
 else:
     print("  cc-arm-folder ipcMain handler already present in main bundle")
 
-if "if(__cc)return __cc;" not in ix:
-    # browseFolder handler arg count varies by release (3 params in the old
-    # asar, 5 in the v3.0.0-rebase build) - match any arg list.
-    ix2, n_bf = re.subn(
-        r'(_\\\$_FileSystem_\\\$_browseFolder",async\([^)]*\)=>\{)',
-        r'\1var __cc=globalThis.__ccConsumeArmedFolder&&globalThis.__ccConsumeArmedFolder();if(__cc)return __cc;',
-        ix
-    )
+# ── Teach browseFolder to honour an armed path.
+#    Found by plain string search, NOT a regex. The regex this replaces spelled
+#    the channel name as _\\\$_FileSystem_\\\$_browseFolder, and an unquoted
+#    heredoc turns \\\$ into a bare $ - which in a regex is an end-of-string
+#    anchor, so the pattern could never match anything. It looked like it
+#    worked only because the daily build's asar is re-extracted from its own
+#    already-patched copy, carrying a patch applied before that breakage.
+#
+#    The handler's argument list has grown across releases (3 params, then 5)
+#    and the channel name is quoted with " in one build and a backtick in the
+#    next, so the search stops at the marker and then walks forward to the
+#    arrow-function brace rather than trying to describe the whole thing.
+_bf_guard = "if(__cc)return __cc;"
+_bf_inject = ("var __cc=globalThis.__ccConsumeArmedFolder&&"
+              "globalThis.__ccConsumeArmedFolder();" + _bf_guard)
+_bf_marker = "_" + D + "_FileSystem_" + D + "_browseFolder"
+if _bf_guard in ix:
+    print("  browseFolder handler already honors armed folder")
+else:
+    n_bf, _from = 0, 0
+    while True:
+        m_at = ix.find(_bf_marker, _from)
+        if m_at < 0:
+            break
+        _from = m_at + len(_bf_marker)
+        # Only the ipc.handle registration, never removeHandler or the
+        # browseFolderS sibling: require ",async(" to open right after the
+        # closing quote of the channel name.
+        head = ix[_from:_from + 10]
+        if not (head[:1] in (chr(34), BT) and head[1:8] == ",async("):
+            continue
+        brace = ix.find(")=>{", _from)
+        if brace < 0:
+            continue
+        cut = brace + len(")=>{")
+        ix = ix[:cut] + _bf_inject + ix[cut:]
+        _from = cut + len(_bf_inject)
+        n_bf += 1
     if n_bf:
-        ix = ix2
         ix_changed = True
         print(f"  Patched browseFolder handler to honor armed folder ({n_bf} site(s))")
     else:
         print("  WARNING: browseFolder handler signature not found - folder one-click open disabled")
-else:
-    print("  browseFolder handler already honors armed folder")
 
 # ── Write a folder's TODO.md back to disk, so the panel's preview pane can be
 #    an editor rather than a viewer. Deliberately narrow: the path must resolve
@@ -736,20 +833,25 @@ else:
 #    Matched on the minWidth/minHeight pair because titleBarStyle:"hidden"
 #    appears twice - the other one is the Quick Entry overlay, which is SUPPOSED
 #    to be frameless and must not be touched.
-_tb = 'minWidth:600,minHeight:400,titleBarStyle:"hidden"'
-if "__ccNativeFrame" in ix:
-    print("  Native window frame already patched")
-elif ix.count(_tb) == 1:
-    # The marker is a COMMENT, not an extra option: these options are handed to
-    # a validator that whitelists keys, so an unknown one risks the main window
-    # failing to create at all.
-    ix = ix.replace(_tb, 'minWidth:600,minHeight:400,/*__ccNativeFrame*/'
-                         'titleBarStyle:process.platform==="linux"?"default":"hidden"')
-    ix_changed = True
-    print("  Main window handed to the window manager (titleBarStyle default on Linux)")
-elif ix.count(_tb) == 0:
-    print("  WARNING: main-window titleBarStyle signature not found - frame left as-is")
-else:
+#    In 1.26832.0 the window is created in index.js rather than in the chunk
+#    that owns the IPC handlers, and "hidden" is written as a template literal,
+#    so this goes through patch_every like the other cross-chunk sites.
+#
+#    Flush the appended handlers into the file cache first: the passes below
+#    read through rd(), and main_path may well be one of the files they touch.
+if ix_changed:
+    wr(main_path, ix)
+
+# The marker is a COMMENT, not an extra option: these options are handed to a
+# validator that whitelists keys, so an unknown one risks the main window
+# failing to create at all.
+_n_tb = patch_every(
+    r'minWidth:600,minHeight:400,titleBarStyle:' + QUOTE + 'hidden' + QUOTE,
+    'minWidth:600,minHeight:400,/*__ccNativeFrame*/'
+    'titleBarStyle:process.platform==="linux"?"default":"hidden"',
+    "main-window titleBarStyle (native frame on Linux)",
+    guard="__ccNativeFrame")
+if _n_tb > 1:
     raise RuntimeError("main-window titleBarStyle signature is no longer unique")
 
 # -- Make "keep computer awake" mean "while working", not "while running". -----
@@ -777,13 +879,30 @@ else:
 #    UNQUOTED, so backslashes are a hazard (see the note at the end of
 #    memory/issues-fixed.md) and a regex for minified identifiers is all
 #    backslashes.
-_probe = '("keepAwakeEnabled")===!0?'
-_k = ix.find(_probe)
-if "__ccWorkActive" in ix:
-    print("  keep-awake governor already present in main bundle")
+#    The pref name is quoted with " in one build and a backtick in the next, and
+#    since 1.26832.0 it lives in its own chunk rather than the main bundle, so
+#    both spellings are searched for across every chunk.
+_ka_path, _ka, _k = None, None, -1
+for _cand in all_chunks():
+    _body_text = rd(_cand)
+    if "__ccWorkActive" in _body_text:
+        _ka_path, _k = _cand, -2
+        break
+    for _q in (chr(34), BT):
+        _p = "(" + _q + "keepAwakeEnabled" + _q + ")===!0?"
+        _at = _body_text.find(_p)
+        if _at >= 0:
+            _ka_path, _ka, _k = _cand, _body_text, _at
+            break
+    if _k >= 0:
+        break
+
+if _k == -2:
+    print("  keep-awake governor already present in " + os.path.basename(_ka_path))
 elif _k < 0:
     print("  WARNING: keepAwakeEnabled claim not found - sleep stays blocked for the whole session")
 else:
+    ix = _ka
     _j = ix.rfind("function ", 0, _k)
     _open = ix.find("{", _j)
     _end = ix.find("}", _k)
@@ -808,7 +927,11 @@ else:
 
     # The installer only re-ran this on a settings change, so a conditional claim
     # would latch at startup and never be revisited. Re-evaluate every minute.
-    _p2 = ix.find('.on("keepAwakeEnabled",')
+    _p2 = -1
+    for _q in (chr(34), BT):
+        _p2 = ix.find(".on(" + _q + "keepAwakeEnabled" + _q + ",")
+        if _p2 >= 0:
+            break
     if _p2 < 0:
         raise RuntimeError("keepAwakeEnabled settings-subscribe site not found")
     _e2 = ix.find("}", _p2)
@@ -850,18 +973,31 @@ else:
         "return busy;}catch(_6){return true;}};"
         "}catch(_){}})();\n"
     )
-    ix = ix + _gov
-    ix_changed = True
-    print("  Patched keep-awake to release when idle (function " + _fn + ", 30m window)")
+    wr(_ka_path, ix + _gov)
+    print("  Patched keep-awake to release when idle (function " + _fn
+          + ", 30m window, in " + os.path.basename(_ka_path) + ")")
 
-if ix_changed:
-    with open(main_path, "w") as f:
-        f.write(ix)
+# ── Write out every chunk that changed, and leave the list where bash can pick
+#    it up: which files got touched is now a per-release fact, so the syntax
+#    check cannot be a hard-coded pair of filenames any more.
+for _path in sorted(_dirty):
+    with open(_path, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(_text[_path])
+with open("$EXTRACT/.cc-patched-files", "w") as f:
+    f.write("\n".join(sorted(_dirty)) + ("\n" if _dirty else ""))
+print(f"  Wrote {len(_dirty)} patched chunk(s)")
 PYEOF
 
 echo "→ Syntax-checking patched JS..."
 node --check "$EXTRACT/.vite/build/mainView.js"
-node --check "$MAIN_BUNDLE"
+# Every chunk the python pass rewrote, not just the main bundle - a syntax error
+# in any of them takes the whole main process down at launch.
+while read -r f; do
+  [[ -n "$f" ]] || continue
+  node --check "$f"
+  echo "  ok $(basename "$f")"
+done < "$EXTRACT/.cc-patched-files"
+rm -f "$EXTRACT/.cc-patched-files"
 
 echo "→ Repacking asar..."
 npx @electron/asar pack "$EXTRACT" /tmp/claude-ui-patched-$TARGET.asar

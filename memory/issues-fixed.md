@@ -988,6 +988,46 @@ empty twice, stop refining the selector and search by content.
 
 ---
 
+## 51. All four main-process patches missed the official build at once (2026-09-01)
+
+**Symptom.** The official build became the daily driver, `update-ui.sh --official` ran without
+error, and the custom UI loaded fine - but the project panel's one-click folder open did nothing,
+the folder picker opened at `$HOME`, the window was frameless again, and the laptop stopped
+sleeping. Four separate features, one run, no failure exit code: each site prints a WARNING and
+carries on, which is right for a single missing site and wrong when they all miss together.
+
+**Root cause.** Two assumptions that had held since the v3.0.0 rebase both stopped being true in
+1.26832.0, and each one alone was enough:
+
+1. **The minifier switched to template literals.** `titleBarStyle:"hidden"` is
+   ``titleBarStyle:`hidden` ``, `("keepAwakeEnabled")===!0?` is `` (`keepAwakeEnabled`)===!0? ``,
+   and the browseFolder channel name is backtick-quoted. Every signature that spelled a quote
+   character missed, and only those.
+2. **One main-process chunk became several.** The folder-picker default path, the window creation
+   and the keep-awake claim each live in a different chunk now, and none of them is the chunk that
+   registers browseFolder - which is the one `MAIN_BUNDLE` locates and the only file the script
+   read. The daily build had hidden this: it happens to keep three of the four in one chunk.
+
+**Fix.** `update-ui.sh` now locates each site by content across every chunk in `.vite/build`
+(`patch_every`), never spells a quote character (`QUOTE` matches `"` or a backtick, built with
+`chr(96)` because a literal backtick in that heredoc would be executed by bash), writes back only
+the chunks it changed, and `node --check`s each one instead of a hard-coded pair of filenames.
+
+**Found on the way: a signature that could never have matched.** The browseFolder patch was written
+as a regex containing `_\$_FileSystem_\$_browseFolder`. The heredoc is unquoted, so bash turned
+`\$` into a bare `$` before python saw it, and a mid-pattern `$` in a regex is an end-of-string
+anchor. It had been dead code for as long as it had existed. It looked applied on the daily build
+only because that asar is re-extracted from its own already-patched copy every run, so a patch
+applied before the breakage kept propagating. Now a plain string search, no regex.
+
+**Lessons.** A WARNING per site is not enough when the failure mode is systemic - four warnings in
+one run mean the build moved, not that four features were dropped. And an idempotence guard that
+reads the *deployed* artifact cannot tell "still applied" from "no longer applicable": the daily
+build has been re-extracting its own output for months, which is exactly what let a dead pattern go
+unnoticed.
+
+---
+
 ## Maintenance note: `custom-ui/workspace.js` contained a literal NUL byte
 
 Until 2026-08-25 the file held `normConn(currentConn || '\x00')` - a sentinel meaning "match

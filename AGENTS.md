@@ -7,6 +7,19 @@ Patches for the Claude Desktop Electron app via preload injection.
 - **Patched app version:** 3.2.1+claude1.24012.9 | **custom-ui.js:** v19
 - **GitHub:** https://github.com/behdadmansouri/claude-desktop-tweaks
 
+> **2026-09-01 - the official build is the daily driver, and it patches like anything else:**
+> `update-ui.sh --official` gives Anthropic's own Linux build everything the patched one has. Two
+> assumptions had to go first, and both are now permanent rules for anything that matches on
+> content: **the main process is many chunks, not one** (each site is located across every file in
+> `.vite/build` by `patch_every`, and only changed chunks are written and `node --check`ed), and
+> **no signature may spell a quote character** - this build's minifier emits template literals, so
+> use `QUOTE`, built from `chr(96)` because a literal backtick in that heredoc is a command.
+> `install-official.sh` re-applies the patch itself now, since it replaces the whole prefix, and
+> shouts (plus a desktop notification) rather than leaving a normal-looking unpatched app;
+> `--no-patch` opts out. `claude-ctl` and the session-start check report **both** builds, each of
+> the four main-process patches per build. Post-mortem, including a browseFolder regex that could
+> never have matched: `memory/issues-fixed.md` #51.
+>
 > **2026-08-25 (later) - control surface, native frame, and what is actually shared:** `claude-ctl`
 > is now the one place to see and change state (`scripts/claude-ctl.sh`, plus a generated
 > `dashboard.html`), and `install-autoupdate.sh` keeps both builds current on a systemd --user
@@ -131,14 +144,14 @@ Preload is sandboxed -- custom code must be embedded at patch time by `update-ui
 Anthropic's **official** Linux app (beta, Debian/Ubuntu `.deb` only) is now also installed,
 unpatched and independent:
 
-| | Patched (daily driver) | Official |
+| | Patched | Official (daily driver) |
 |---|---|---|
 | Prefix | `~/.local/lib/claude-desktop-patched` | `~/.local/lib/claude-desktop-official` |
 | Profile | `~/.config/Claude` | `~/.config/ClaudeOfficial` |
 | Version | 1.24012.9 | 1.26832.0 |
-| Custom UI | yes | **no** (no project panel, no titlewatch) |
-| `claude://` handler | yes | deliberately not registered |
-| Update | **none** - `scripts/update-appimage.sh` is broken, the AUR package was removed 2026-08-14 (see `memory/maintenance.md`) | `scripts/install-official.sh` |
+| Custom UI | yes | **yes**, since 2026-09-01 |
+| `claude://` handler | yes | still not registered (would take it off the patched build) |
+| Update | **none** - `scripts/update-appimage.sh` is broken, the AUR package was removed 2026-08-14 (see `memory/maintenance.md`) | `scripts/install-official.sh`, which re-applies the custom UI itself |
 
 They cannot coexist as *packages* -- `claude-desktop-appimage` declares
 `provides/conflicts=claude-desktop`, and AUR `claude-desktop` / `claude-desktop-extra` would

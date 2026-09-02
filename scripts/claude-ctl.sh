@@ -144,17 +144,31 @@ cmd_status() {
     "$(asar_has_patch "$OFFICIAL_ASAR" 'cc-ai-data-v2' && echo yes || echo no)"
   echo
   echo "  Patch freshness:"
-  if patch_stale "$PATCHED_ASAR"; then
-    echo "    patched   STALE - sources newer than the deployed asar (claude-ctl patch)"
-  else
-    echo "    patched   current"
-  fi
+  for b in patched official; do
+    [[ $b == patched ]] && a="$PATCHED_ASAR" || a="$OFFICIAL_ASAR"
+    if [[ ! -f "$a" ]]; then
+      printf '    %-9s not installed\n' "$b"
+    elif patch_stale "$a"; then
+      printf '    %-9s STALE - sources newer than the deployed asar (claude-ctl patch)\n' "$b"
+    else
+      printf '    %-9s current\n' "$b"
+    fi
+  done
   echo
-  echo "  Main-process patches (patched build):"
-  printf '    %-22s %s\n' "native window frame" \
-    "$(asar_has_patch "$PATCHED_ASAR" '__ccNativeFrame' && echo applied || echo 'not applied')"
-  printf '    %-22s %s\n' "work-aware keep-awake" \
-    "$(asar_has_patch "$PATCHED_ASAR" '__ccWorkActive' && echo applied || echo 'not applied')"
+  # Reported per build, not just for the daily driver: these four are located by
+  # content signature, and a release that renames or re-quotes a site makes one
+  # of them silently miss while everything else still works.
+  echo "  Main-process patches:"
+  printf '    %-24s %-14s %s\n' "" "PATCHED" "OFFICIAL"
+  _mp() {
+    printf '    %-24s %-14s %s\n' "$1" \
+      "$(asar_has_patch "$PATCHED_ASAR"  "$2" && echo applied || echo 'not applied')" \
+      "$(asar_has_patch "$OFFICIAL_ASAR" "$2" && echo applied || echo 'not applied')"
+  }
+  _mp "native window frame"    '__ccNativeFrame'
+  _mp "work-aware keep-awake"  '__ccWorkActive'
+  _mp "folder one-click open"  'if(__cc)return __cc;'
+  _mp "folder-picker default"  '+"/Documents/AI Projects")'
   echo
   echo "  Sessions:"
   if sessions_shared; then
@@ -251,13 +265,10 @@ cmd_update() {
   local did=0
   if grep -q 'official:.*AVAILABLE' "$STATUS" 2>/dev/null; then
     echo "→ Installing the official build..."
-    "$SCRIPT_DIR/install-official.sh" && did=1
     # install-official.sh replaces the whole prefix, so any custom UI in it is
-    # gone. Put it back only if it was there before this ran.
-    if [[ $did -eq 1 ]]; then
-      echo "→ Re-applying custom UI to the official build..."
-      "$SCRIPT_DIR/update-ui.sh" --official || true
-    fi
+    # gone; it re-applies the patch itself now (and fails loudly if it cannot),
+    # so there is deliberately no second re-patch here.
+    "$SCRIPT_DIR/install-official.sh" && did=1
   fi
   if grep -q 'patched:.*AVAILABLE' "$STATUS" 2>/dev/null; then
     echo "→ Updating the patched build..."

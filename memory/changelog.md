@@ -4,6 +4,24 @@ Feature-level, dated, append-only. Not a per-commit log (`git log` covers that) 
 log. Bug *post-mortems* live in [issues-fixed.md](issues-fixed.md); this is the "what shipped,
 in what order" view.
 
+## 2026-09-01
+
+- **The official Claude Desktop build now carries the custom UI.** It has gone from a side-by-side
+  curiosity to the daily driver, so everything the patched build has - project panel, usage chip,
+  window title, one-click folder open, folder-picker default, native window frame, work-aware
+  keep-awake - now applies to it as well.
+- **The patcher no longer assumes one main-process chunk, or one quote character.** Each site is
+  located by content across every chunk and matched against either `"` or a template literal; only
+  the chunks that changed are rewritten, and each is syntax-checked. Post-mortem: [#51](issues-fixed.md).
+  This also repaired the one-click folder open on the daily build, whose signature turned out never
+  to have matched anything.
+- **An official update can no longer silently drop the patch.** `install-official.sh` replaces the
+  whole prefix, so it now re-applies the custom UI itself and fails loudly (with a desktop
+  notification) instead of leaving a normal-looking but unpatched app. `--no-patch` opts out.
+- **`claude-ctl` and the session-start update check report both builds**, including which of the
+  four main-process patches are applied to each, so a release that moves a site shows up as one
+  "not applied" cell rather than as a feature quietly going missing.
+
 ## 2026-08-27
 
 - **`CLAUDE.md` is now `AGENTS.md`** - the workspace convention since 2026-08-18; this project had

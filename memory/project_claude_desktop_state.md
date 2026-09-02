@@ -7,14 +7,16 @@ metadata:
   originSessionId: 32571da7-297f-43a2-94ef-bd1b5e9e2ddb
 ---
 
-Claude Desktop is patched and working as of 2026-08-27. Wiki lives at `memory/` (split into multiple files, indexed by `memory/MEMORY.md`).
+Claude Desktop is patched and working as of 2026-09-01, on **both** builds. Wiki lives at `memory/` (split into multiple files, indexed by `memory/MEMORY.md`).
 
 **Why:** User wants custom UI injected into Claude Desktop's Electron renderer via a patched asar.
 
 **How to apply:** Start from `AGENTS.md` for file registry, then open the relevant `custom-ui/` module.
 
 Key facts:
-- Patched app is at `/home/z3z0/.local/lib/claude-desktop-patched/`, build 1.24012.9. Anthropic's official app is installed alongside it on its own profile; `claude-ctl` reports both. The patched build has no update source since its AUR package was removed (open TODO)
+- Two builds, both patched. Anthropic's **official** app (`~/.local/lib/claude-desktop-official`, profile `~/.config/ClaudeOfficial`) is the daily driver since 2026-09-01 and carries the full custom UI; the aaddrick **patched** build (`~/.local/lib/claude-desktop-patched`, build 1.24012.9) still works but has no update source since its AUR package was removed (open TODO). `claude-ctl` reports both, patch by patch
+- Anything matching on minified content must handle **either quote style** and must search **every chunk** in `.vite/build` - the official build uses template literals and splits the main process across files. This is what `patch_every` / `QUOTE` in `update-ui.sh` exist for; see [[issues-fixed]] #51
+- `install-official.sh` replaces the whole prefix, so it re-applies the custom UI itself and fails loudly if it cannot
 - `custom-ui.js` is built from modules in `custom-ui/` by `scripts/update-ui.sh`; run things via [[USAGE]]
 - `update-ui.sh` embeds the combined JS into `mainView.js` inside the asar
 - The top-bar hider is back as `custom-ui/chrome.js`, matching on geometry only and self-healing if hiding collapses the page's visible text; see [[issues-fixed]] #18 for why a guessed selector is never acceptable here
