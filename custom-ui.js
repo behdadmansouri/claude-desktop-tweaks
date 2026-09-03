@@ -3850,12 +3850,53 @@ function ccDump() {
     sidebarRows: dgSidebarRows(),
     findLabels: dgFindLabels(),
     widthChain: dgWidthChain(),
+    wsRow: dgWsRow(),
     nags: dgNags(),
     bridge: Object.keys(window.ccBridge || {}),
   };
   // One line, so it is greppable in a log full of React noise.
   console.error('[cc-dump] ' + JSON.stringify(out));
   return out;
+}
+
+// The workspace row: where the project panel hangs off, and the one anchor that
+// is still matched by a Tailwind class (`.flex.flex-wrap.gap-g5`). Class names
+// are design tokens and get renamed between builds, which is exactly what left
+// the panel missing on the official build while everything else worked. This
+// reports the ancestry of every menu button so a replacement anchor can be
+// measured rather than guessed.
+function dgWsRow() {
+  const out = [];
+  const btns = [...document.querySelectorAll('button[aria-haspopup="menu"]')].slice(0, 8);
+  for (const btn of btns) {
+    const r = btn.getBoundingClientRect();
+    const chain = [];
+    let el = btn.parentElement;
+    for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      const er = el.getBoundingClientRect();
+      chain.push({
+        tag: el.tagName.toLowerCase(),
+        cls: (el.className && el.className.baseVal !== undefined
+                ? el.className.baseVal : String(el.className || '')).slice(0, 160),
+        rect: [Math.round(er.x), Math.round(er.y), Math.round(er.width), Math.round(er.height)],
+        menuBtns: el.querySelectorAll('button[aria-haspopup="menu"]').length,
+        display: cs.display, wrap: cs.flexWrap, gap: cs.gap,
+        attrs: [...el.attributes].map(a => a.name).filter(n => n.startsWith('data-')).slice(0, 6),
+      });
+    }
+    out.push({
+      label: (btn.getAttribute('aria-label') || btn.textContent || '').trim().slice(0, 60),
+      rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+      chain,
+    });
+  }
+  return {
+    path: location.pathname,
+    legacyAnchors: document.querySelectorAll('.flex.flex-wrap.gap-g5').length,
+    menuButtons: btns.length,
+    rows: out,
+  };
 }
 
 function dgBootstrap() {
