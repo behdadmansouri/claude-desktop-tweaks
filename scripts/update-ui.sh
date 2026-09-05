@@ -111,9 +111,19 @@ npx --yes @electron/asar extract "$ASAR" "$EXTRACT"
 
 # Locate the main-process bundle by content signature rather than filename -
 # the vite build hashes chunk filenames and they change every release.
-MAIN_BUNDLE="$(grep -lF '_$_FileSystem_$_browseFolder' "$EXTRACT"/.vite/build/*.js | head -1)"
+#
+# The old needle ('_$_FileSystem_$_browseFolder', the ipcMain channel string)
+# stopped being unique once a build started splitting the "FileSystem_$_"
+# prefix from "browseFolder" across a string concat (E+"FileSystem_$_browse
+# Folder") - that leaves the substring sitting in the renderer/preload bundle
+# too (which calls ipcRenderer.invoke with it), so the old grep could pick a
+# non-main-process file. 'browseFolder:async' is the actual ipcMain handler's
+# property definition (isDestroyed/dialog logic lives right after it) and
+# only exists in the main-process chunk - confirmed unique across both the
+# official and patched extracts as of 2026-09-04.
+MAIN_BUNDLE="$(grep -lF 'browseFolder:async' "$EXTRACT"/.vite/build/*.js | head -1)"
 if [[ -z "$MAIN_BUNDLE" ]]; then
-  echo "ERROR: could not locate main-process bundle (FileSystem_\$_browseFolder marker not found)" >&2
+  echo "ERROR: could not locate main-process bundle (browseFolder:async marker not found)" >&2
   exit 1
 fi
 echo "  Main-process bundle: $(basename "$MAIN_BUNDLE")"
@@ -437,10 +447,20 @@ _bf_guard = "if(__cc)return __cc;"
 _bf_inject = ("var __cc=globalThis.__ccConsumeArmedFolder&&"
               "globalThis.__ccConsumeArmedFolder();" + _bf_guard)
 _bf_marker = "_" + D + "_FileSystem_" + D + "_browseFolder"
+# The official 1.26832.0+ build (measured 2026-09-04) stopped registering
+# browseFolder via a direct ipcMain.handle("_$_FileSystem_$_browseFolder",
+# async(...)=>{...}) call - it moved to a generic handler table where
+# browseFolder is just an object-literal method: browseFolder:async(e,n,r,i)
+# =>{...}, dispatched elsewhere by a shared loop that prefixes the channel
+# name. Try the old direct-registration marker first (still what a daily
+# build carries), then fall back to the object-method form. The colon in
+# "browseFolder:async(" also keeps this from matching the browseFolderS
+# sibling, which is spelled "browseFolders:async(".
 if _bf_guard in ix:
     print("  browseFolder handler already honors armed folder")
 else:
-    n_bf, _from = 0, 0
+    n_bf = 0
+    _from = 0
     while True:
         m_at = ix.find(_bf_marker, _from)
         if m_at < 0:
@@ -459,6 +479,21 @@ else:
         ix = ix[:cut] + _bf_inject + ix[cut:]
         _from = cut + len(_bf_inject)
         n_bf += 1
+    if n_bf == 0:
+        _bf_marker2 = "browseFolder:async("
+        _from = 0
+        while True:
+            m_at = ix.find(_bf_marker2, _from)
+            if m_at < 0:
+                break
+            _from = m_at + len(_bf_marker2)
+            brace = ix.find(")=>{", _from)
+            if brace < 0:
+                continue
+            cut = brace + len(")=>{")
+            ix = ix[:cut] + _bf_inject + ix[cut:]
+            _from = cut + len(_bf_inject)
+            n_bf += 1
     if n_bf:
         ix_changed = True
         print(f"  Patched browseFolder handler to honor armed folder ({n_bf} site(s))")
