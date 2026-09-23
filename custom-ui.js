@@ -4054,7 +4054,14 @@ if (!document.documentElement || document.readyState === 'loading') {
 let lastPath = '';
 
 function scan() {
-  document.querySelectorAll('.flex.flex-wrap.gap-g5').forEach(row => {
+  // The workspace row is the parent of the connection pill. Anchored on the
+  // pill's test id, not a class: `.flex.flex-wrap.gap-g5` became `gap-xs` by
+  // 2026-09 and the panel silently stopped installing. Legacy class kept as a
+  // fallback for the older patched build.
+  const rows = new Set();
+  document.querySelectorAll('[data-testid="epitaxy-env-pill"]').forEach(p => p.parentElement && rows.add(p.parentElement));
+  document.querySelectorAll('.flex.flex-wrap.gap-g5').forEach(r => rows.add(r));
+  rows.forEach(row => {
     if (row.querySelector('button[aria-haspopup="menu"]')) installPanel(row);
   });
   // The panel lives on <body> now, so nothing tears it down when its row goes;

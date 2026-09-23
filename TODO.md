@@ -6,10 +6,6 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 
 ## ⚡ Next up
 
-- [ ] 🤖 **Re-anchor the project panel** `M` - its anchor class `.flex.flex-wrap.gap-g5` is gone
-      from the new-session page, so the panel never installs. Read the next `[cc-dump]` `wsRow`
-      line in `~/.config/ClaudeOfficial/logs/claude.ai-web.log` and pick a semantic anchor.
-
 - [ ] 🤖 **Find a new base for the patched build** `L` `think` - its AUR package is gone, so it
       can no longer update at all. [memory/maintenance.md](memory/maintenance.md) compares the
       options.
@@ -20,6 +16,9 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 ## 🔍 Verification
 
 Standing checks, not tasks. They move to the changelog once they have held up for a few days.
+
+- [ ] 🧍 **The project panel shows on a new session** - it sits beside the composer on the
+      page where you pick a folder. Missing again means the `epitaxy-env-pill` test id moved.
 
 - [ ] 🧍 **The usage chip shows a context number on its own** - you should never have to click
       the usage button to see it. A count with no percentage is expected until you have opened
