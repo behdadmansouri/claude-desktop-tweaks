@@ -31,6 +31,10 @@ once it is extracted; read its repo and reuse it. Until then `workspace.js` here
 > is now the one place to see and change state (`scripts/claude-ctl.sh`, plus a generated
 > `dashboard.html`), and `install-autoupdate.sh` keeps both builds current on a systemd --user
 > timer that **refuses to act while the app is running** - it works the window after you quit.
+> **Retired 2026-09-23 as well:** the keep-awake governor (Anthropic's own sleep management is good now),
+> session sharing (the official build's session index was copied into its own profile, no symlink), and
+> the autoupdate timer. The patched build is no longer used. Older notes below are history.
+>
 > The native-frame patch (`titleBarStyle` to `default` on Linux) and the chrome-band CSS were **retired
 > 2026-09-23**: Anthropic handles the frame in its own build now. `update-ui.sh` still runs a one-shot
 > undo pass so already-patched asars get reverted; delete it once both builds have been re-deployed.

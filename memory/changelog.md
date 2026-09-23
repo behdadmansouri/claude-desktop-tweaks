@@ -102,3 +102,4 @@ Not reconstructed. See `git log`, [features.md](features.md) and [issues-fixed.m
 (#1-45), which were the record until this file existed.
 - 2026-09-23: project panel is back on the official build, anchored on the connection pill's test id instead of a renamed Tailwind class.
 - 2026-09-23: reverted the native-frame patch and the chrome-band CSS; Anthropic handles the window frame itself now.
+- 2026-09-23: retired the keep-awake governor, session sharing (index copied into the official profile) and the autoupdate timer; the patched build is no longer used.

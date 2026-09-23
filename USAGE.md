@@ -44,33 +44,7 @@ claude-ctl update         # install what is available, then re-patch
 claude-ctl update --force # ... even while the app is running
 ```
 
-A systemd **user** timer runs `claude-ctl update` every 2h and does nothing while the app is
-running, so updates land in the window after you quit.
-
-```bash
-./scripts/install-autoupdate.sh --status   # or --remove
-```
+There is no autoupdate timer (retired 2026-09-23); run it by hand after quitting the app.
 
 The patched build currently has **no update source** (the AUR package was removed 2026-08-14);
 only the official build updates. See TODO.md.
-
-## Sharing sessions between the two builds
-
-```bash
-claude-ctl share      # official build shows the patched build's session list
-claude-ctl unshare    # or scripts/share-sessions.sh --undo
-```
-
-Only the session *index* is linked. Transcripts under `~/.claude/projects/` were always shared,
-and claude.ai chats are server-side. Enabled 2026-08-27.
-
-## When something looks wrong
-
-| Symptom | First move |
-|---|---|
-| Blank page | `~/.cache/claude-desktop-debian/launcher.log` - a GPU FATAL is self-healing now |
-| Custom UI missing | `claude-ctl` reports patch freshness; re-run `update-ui.sh` |
-| A selector needs measuring | `window.__ccDump()` in DevTools, then read `[cc-dump]` in `~/.config/Claude/logs/claude.ai-web.log` |
-| Usage chip wrong | `window.__ccUsage()` |
-| Window title wrong | `window.__ccTitleDebug()` |
-| Sleep held open | `claude-ctl` lists every inhibitor KDE holds and why |

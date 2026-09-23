@@ -925,128 +925,55 @@ if _n_undo:
 else:
     print("  No native-frame patch to revert")
 
-# -- Make "keep computer awake" mean "while working", not "while running". -----
+# -- Undo the old keep-awake governor (retired 2026-09-23). --------------------
 #
-#    The app claims powerSaveBlocker('prevent-app-suspension') once, at startup,
-#    the instant the keepAwakeEnabled pref is true - and holds it until quit.
-#    Measured 2026-08-25: main.log had a single
-#      [keep-awake] started (id=0, first claim=keepAwakeEnabled)
-#    from three days earlier and no matching "stopped" since. So an idle laptop
-#    never sleeps, which is the symptom. Note the pref defaults to FALSE and is
-#    flipped on for you - the build carries a wakeSchedulerCourtesyFlippedKeepAwake
-#    flag - so turning it off by hand does not stay off.
+#    An earlier version of this script made the keep-awake claim conditional on
+#    recent session activity. Anthropic manages sleep well in its own build now,
+#    so the patch is gone. The deployed asars still carry it (there is no
+#    pristine copy to start from), so this pass restores the original claim
+#    function and drops the two additions. Idempotent. Delete this block once
+#    both builds have been re-deployed once.
 #
-#    The upstream shape is:
-#      const s7e="keepAwakeEnabled";
-#      function a7e(){kt("keepAwakeEnabled")===!0?GTn(s7e):ZTn(s7e)}
-#      function XTn(){ks.on("keepAwakeEnabled",a7e),a7e()}
-#    ...with every one of those names regenerated per release, so this is located
-#    by the one stable thing in it: the pref name. Two edits:
-#      1. the claim becomes conditional on globalThis.__ccWorkActive()
-#      2. the installer re-evaluates on a timer, not only on a settings change
-#    plus an appended IIFE that defines the predicate.
-#
-#    Parsed by string search rather than a regex on purpose: this heredoc is
-#    UNQUOTED, so backslashes are a hazard (see the note at the end of
-#    memory/issues-fixed.md) and a regex for minified identifiers is all
-#    backslashes.
-#    The pref name is quoted with " in one build and a backtick in the next, and
-#    since 1.26832.0 it lives in its own chunk rather than the main bundle, so
-#    both spellings are searched for across every chunk.
-_ka_path, _ka, _k = None, None, -1
-for _cand in all_chunks():
-    _body_text = rd(_cand)
-    if "__ccWorkActive" in _body_text:
-        _ka_path, _k = _cand, -2
-        break
-    for _q in (chr(34), BT):
-        _p = "(" + _q + "keepAwakeEnabled" + _q + ")===!0?"
-        _at = _body_text.find(_p)
-        if _at >= 0:
-            _ka_path, _ka, _k = _cand, _body_text, _at
-            break
-    if _k >= 0:
-        break
-
-if _k == -2:
-    print("  keep-awake governor already present in " + os.path.basename(_ka_path))
-elif _k < 0:
-    print("  WARNING: keepAwakeEnabled claim not found - sleep stays blocked for the whole session")
-else:
-    ix = _ka
-    _j = ix.rfind("function ", 0, _k)
-    _open = ix.find("{", _j)
-    _end = ix.find("}", _k)
-    _fn = ix[_j + len("function "):ix.find("(", _j)]
-    _body = ix[_open + 1:_end]
-    # kt("keepAwakeEnabled")===!0 ? GTn(s7e) : ZTn(s7e)
-    _cond, _rest = _body.split("?", 1)
-    _claim, _release = _rest.split(":", 1)
-    if "{" in _body or "}" in _body:
-        raise RuntimeError("keep-awake claim body is not the expected one-liner: " + _body[:120])
-    _new = (
-        "function " + _fn + "(){"
-        "var _on=(" + _cond + ");var _busy=true;"
-        # Fail SAFE: if the predicate is missing or throws, assume work is in
-        # progress and keep blocking. A laptop that sleeps mid-run is a much
-        # worse failure than one that stays awake an hour too long.
-        "try{if(typeof globalThis.__ccWorkActive==='function')_busy=globalThis.__ccWorkActive();}"
-        "catch(_ka){_busy=true;}"
-        "if(_on&&_busy){" + _claim + ";}else{" + _release + ";}}"
-    )
-    ix = ix[:_j] + _new + ix[_end + 1:]
-
-    # The installer only re-ran this on a settings change, so a conditional claim
-    # would latch at startup and never be revisited. Re-evaluate every minute.
-    _p2 = -1
-    for _q in (chr(34), BT):
-        _p2 = ix.find(".on(" + _q + "keepAwakeEnabled" + _q + ",")
-        if _p2 >= 0:
-            break
-    if _p2 < 0:
-        raise RuntimeError("keepAwakeEnabled settings-subscribe site not found")
-    _e2 = ix.find("}", _p2)
-    ix = ix[:_e2] + ",setInterval(" + _fn + ",60000)" + ix[_e2:]
-
-    # The predicate. "Working" = some Claude Code session file was touched
-    # recently, read from the profile the app is actually running on.
-    #
-    # Touched, not lastActivityAt: that field only moves at turn boundaries (a
-    # live session was measured 16 minutes stale mid-turn), and a window that
-    # short would suspend the machine in the middle of a long run. File mtime is
-    # a superset of real activity - it also moves for unrelated rewrites - and
-    # erring toward "busy" is the direction that cannot lose work.
-    #
-    # Deliberately NOT keyed on window focus: an app left focused overnight is
-    # exactly the reported situation, and focus would re-create the bug.
-    _gov = (
-        ";(function(){try{var _e=require('electron'),fs=require('fs'),p=require('path');"
-        "var MIN=parseInt(process.env.CC_KEEPAWAKE_IDLE_MIN||'',10);if(!(MIN>0))MIN=30;"
-        "var WIN=MIN*60000,_hit=0,_at=0,_last=null;"
-        "function touched(){var now=Date.now();"
-        # One filesystem sweep a minute at most, whatever calls this.
-        "if(now-_at<45000)return _hit;_at=now;var best=0;"
-        "try{var root=p.join(_e.app.getPath('userData'),'claude-code-sessions');"
-        "var orgs=fs.readdirSync(root);"
-        "for(var a=0;a<orgs.length;a++){var od=p.join(root,orgs[a]),accts;"
-        "try{accts=fs.readdirSync(od);}catch(_1){continue;}"
-        "for(var b=0;b<accts.length;b++){var ad=p.join(od,accts[b]),files;"
-        "try{files=fs.readdirSync(ad);}catch(_2){continue;}"
-        "for(var c=0;c<files.length;c++){if(files[c].indexOf('local_')!==0)continue;"
-        "try{var m=fs.statSync(p.join(ad,files[c])).mtimeMs;if(m>best)best=m;}catch(_3){}}}}"
-        # An unreadable session store is not evidence of idleness.
-        "}catch(_4){best=now;}"
-        "_hit=best;return _hit;}"
-        "globalThis.__ccWorkActive=function(){try{"
-        "var busy=(Date.now()-touched())<WIN;"
-        "if(busy!==_last){_last=busy;try{console.log('[cc-keep-awake] '+(busy?'working':'idle')+"
-        "' (idle window '+MIN+'m)');}catch(_5){}}"
-        "return busy;}catch(_6){return true;}};"
-        "}catch(_){}})();\n"
-    )
-    wr(_ka_path, ix + _gov)
-    print("  Patched keep-awake to release when idle (function " + _fn
-          + ", 30m window, in " + os.path.basename(_ka_path) + ")")
+#    The patched shape, written by the old code, was:
+#      function NAME(){var _on=(COND);var _busy=true;try{...}catch(_ka){...}
+#                      if(_on&&_busy){CLAIM;}else{RELEASE;}}
+#    and the original was simply:
+#      function NAME(){COND?CLAIM:RELEASE}
+#    plus a setInterval(NAME,60000) call added at the settings-subscribe site,
+#    plus an appended block that defines the activity predicate. Plain string
+#    search only: this heredoc is unquoted, so no regex and no backslashes.
+_n_ka = 0
+_ka_iife = (";(function(){try{var _e=require('electron'),fs=require('fs'),"
+            "p=require('path');var MIN=parseInt(process.env.CC_KEEPAWAKE_IDLE_MIN")
+for _path in all_chunks():
+    _t = rd(_path)
+    if "__ccWorkActive" not in _t:
+        continue
+    _s = _t.find(_ka_iife)
+    if _s >= 0:
+        _tail = "}catch(_){}})();" + chr(10)
+        _e = _t.find(_tail, _s)
+        if _e >= 0:
+            _t = _t[:_s] + _t[_e + len(_tail):]
+    _a = _t.find("var _on=(")
+    if _a >= 0:
+        _j = _t.rfind("function ", 0, _a)
+        _fn = _t[_j + len("function "):_t.find("(", _j)]
+        _ce = _t.find(");var _busy=true;", _a)
+        _cond = _t[_a + len("var _on=("):_ce]
+        _c1 = _t.find("if(_on&&_busy){", _ce)
+        _c2 = _t.find(";}else{", _c1)
+        _c3 = _t.find(";}}", _c2)
+        _claim = _t[_c1 + len("if(_on&&_busy){"):_c2]
+        _release = _t[_c2 + len(";}else{"):_c3]
+        _orig = "function " + _fn + "(){" + _cond + "?" + _claim + ":" + _release + "}"
+        _t = _t[:_j] + _orig + _t[_c3 + len(";}}"):]
+        _t = _t.replace(",setInterval(" + _fn + ",60000)", "")
+        print("  Restored keep-awake claim: " + _orig)
+    wr(_path, _t)
+    _n_ka += 1
+if not _n_ka:
+    print("  No keep-awake governor to revert")
 
 # ── Write out every chunk that changed, and leave the list where bash can pick
 #    it up: which files got touched is now a per-release fact, so the syntax

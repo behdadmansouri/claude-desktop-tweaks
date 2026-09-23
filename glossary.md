@@ -9,6 +9,5 @@ Emoji shorthand for this project. Use the emoji alone in chat; never re-explain 
 | 📈 | the usage chip: `custom-ui/usage.js`'s live context/5-hour/weekly indicator, polling the app's own `/usage` endpoint instead of scraping the popover |
 | 📏 | measure, don't guess: this project's standing rule, extend `diag.js`/`workspace.js` probes and read a real DOM dump from the log before writing a selector fix, never guess an anchor |
 | 🧨 | the heredoc hazard: `update-ui.sh`'s python patcher block is an UNQUOTED heredoc, a stray backtick, `$(`, or backslash escape in a comment gets executed as shell, not read as text |
-| 🔗 | session sharing: `scripts/share-sessions.sh` symlinking `claude-code-sessions` so both builds' session indexes are one directory; transcripts were already shared, this was the last gap |
 | ✂️ | the July scope trim: the 2026-07-12 cut-down to just the project panel, deleting `sidebar.js`/`fbar.js`/`topbar.js`/`usage.js`/`banners.js`; a recurring source of "X was deleted here" bugs (`sampleWS`, the topbar hider) |
 | 🚀 | TODO simplification fleet: the reusable Sonnet-agent-per-project procedure that trims every project's `TODO.md`; invoked with "Run the TODO simplification fleet", brief stored at root `memory/reference/reference_todo_simplify_fleet.md` |
