@@ -17,28 +17,6 @@ function injectBaseCSS() {
     '.df-leading-slot>*{margin-right:0!important;}',
     '.df-leading-slot:empty{display:inline-block!important;width:4px!important;min-width:4px!important;margin:0!important;}',
 
-    // ── the empty band above the tab pills ──
-    // Measured, not guessed (issues-fixed #18 is why): the app's own stylesheet
-    // has exactly one rule that opens it -
-    //     .dframe-root{--df-chrome-bar-height:0px}
-    //     .dframe-root[data-wco]{--df-chrome-bar-height:36px}
-    // and that variable is the sole consumer in two places:
-    //     .dframe-content{padding-top:var(--df-chrome-bar-height)}
-    //     .dframe-sidebar{top:calc(8px + var(--df-chrome-bar-height))}
-    // i.e. the same 36px the user removed by hand in DevTools before asking for
-    // this. `data-wco` means "the app is drawing its own window controls in an
-    // overlay strip". Since 2026-08-25 the main window is titleBarStyle:"default"
-    // and KWin draws the frame, so nothing is painted in that strip - it is
-    // reserved space for controls that live in the titlebar now.
-    //
-    // Zeroing the variable is deliberately the whole fix: it moves the pills and
-    // the sidebar up together, and it cannot blank the page the way hiding an
-    // element can, because no element is hidden. `cc-chrome-bar=keep` in
-    // localStorage puts the band back if a future build ever draws in it again.
-    (() => { try { return localStorage.getItem('cc-chrome-bar') === 'keep'; } catch (_) { return false; } })()
-      ? '/* chrome bar kept by cc-chrome-bar=keep */'
-      : '.dframe-root[data-wco]{--df-chrome-bar-height:0px!important;}',
-
     // ── dark-mode override for the workspace/project-picker panel ──
     // .cc-ws-panel's background is hardcoded to a light sepia (#f2e8d5) in
     // workspace.js (inline style, needed as the light-mode default since the

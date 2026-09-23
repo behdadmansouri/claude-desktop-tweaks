@@ -101,3 +101,4 @@ full-width, Cowork no longer shows duplicate close buttons, and the effort selec
 Not reconstructed. See `git log`, [features.md](features.md) and [issues-fixed.md](issues-fixed.md)
 (#1-45), which were the record until this file existed.
 - 2026-09-23: project panel is back on the official build, anchored on the connection pill's test id instead of a renamed Tailwind class.
+- 2026-09-23: reverted the native-frame patch and the chrome-band CSS; Anthropic handles the window frame itself now.

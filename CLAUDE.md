@@ -2,6 +2,13 @@
 
 Patches for the Claude Desktop Electron app via preload injection.
 
+**Role since 2026-09-23: this is the private TWEAKS project.** The project switcher panel is being
+extracted into its own open-source project, `../Claude Project Switcher 🗂️/` (GPL-3.0, Linux first).
+That project owns the switcher (`custom-ui/workspace.js` and what it needs). Here we keep the
+personal tooling (keep-awake gating, session sharing, `claude-ctl`, autoupdate timer, ActivityWatch
+title) and build it ON TOP of the switcher, not a second copy of it. Don't change the switcher here
+once it is extracted; read its repo and reuse it. Until then `workspace.js` here stays the source.
+
 - **Patched app:** `~/.local/lib/claude-desktop-patched/`
 - **Original AppImage:** `/opt/claude-desktop/claude-desktop.AppImage` (untouched, installed via AUR package `claude-desktop-appimage`)
 - **Patched app version:** 3.2.1+claude1.24012.9 | **custom-ui.js:** v19
@@ -24,10 +31,9 @@ Patches for the Claude Desktop Electron app via preload injection.
 > is now the one place to see and change state (`scripts/claude-ctl.sh`, plus a generated
 > `dashboard.html`), and `install-autoupdate.sh` keeps both builds current on a systemd --user
 > timer that **refuses to act while the app is running** - it works the window after you quit.
-> The main window was created `titleBarStyle:"hidden"`, i.e. frameless on Linux with the app
-> drawing its own controls; it is now `"default"` there, so KWin decorates it. Matched on the
-> `minWidth:600,minHeight:400` signature, because the *other* `titleBarStyle:"hidden"` is the Quick
-> Entry overlay and must stay frameless.
+> The native-frame patch (`titleBarStyle` to `default` on Linux) and the chrome-band CSS were **retired
+> 2026-09-23**: Anthropic handles the frame in its own build now. `update-ui.sh` still runs a one-shot
+> undo pass so already-patched asars get reverted; delete it once both builds have been re-deployed.
 >
 > **What is and is not shared between the two builds** (measured, not assumed): claude.ai chats are
 > server-side; Claude Code **transcripts already are** shared - the desktop's Code tab *is* Claude

@@ -898,43 +898,32 @@ if "cc-open-folder" not in ix:
 else:
     print("  cc-open-folder ipcMain handler already present in main bundle")
 
-# -- Hand the window frame back to KWin. --------------------------------------
+# -- Undo the old native-frame patch (retired 2026-09-23). ---------------------
 #
-#    The main window is created with titleBarStyle:"hidden", which on Linux means
-#    no window manager decoration at all - so the app has to draw its own close /
-#    maximize controls in HTML, and you lose every KDE affordance that hangs off
-#    a real titlebar (window rules, tiling shortcuts, the window menu, snapping).
-#    titleBarOverlay is set alongside it but is Windows-only in this build (the
-#    app's own guard logs "titleBarOverlay only works on Windows"), so on Linux
-#    it is simply a frameless window.
-#
-#    "default" restores frame:true, and KWin decorates it like any other window.
-#    Kept conditional on Linux so the same patch stays harmless if it is ever run
-#    against another platform's build.
-#
-#    Matched on the minWidth/minHeight pair because titleBarStyle:"hidden"
-#    appears twice - the other one is the Quick Entry overlay, which is SUPPOSED
-#    to be frameless and must not be touched.
-#    In 1.26832.0 the window is created in index.js rather than in the chunk
-#    that owns the IPC handlers, and "hidden" is written as a template literal,
-#    so this goes through patch_every like the other cross-chunk sites.
-#
-#    Flush the appended handlers into the file cache first: the passes below
-#    read through rd(), and main_path may well be one of the files they touch.
+#    An earlier version of this script rewrote the main window titleBarStyle to
+#    default on Linux so the window manager drew the frame. Anthropic now handles
+#    the frame in its own build, so the patch is gone. But the deployed asars
+#    still carry it (this script patches the live asar in place, there is no
+#    pristine copy to start from), so this pass puts the original text back.
+#    Idempotent: with nothing to undo it changes nothing. Once both builds have
+#    been re-deployed once, this block can be deleted.
+#    The marker was a comment, so the exact patched text is known and a plain
+#    string replace is enough (no regex, no escapes, no quote-style guessing).
 if ix_changed:
     wr(main_path, ix)
 
-# The marker is a COMMENT, not an extra option: these options are handed to a
-# validator that whitelists keys, so an unknown one risks the main window
-# failing to create at all.
-_n_tb = patch_every(
-    r'minWidth:600,minHeight:400,titleBarStyle:' + QUOTE + 'hidden' + QUOTE,
-    'minWidth:600,minHeight:400,/*__ccNativeFrame*/'
-    'titleBarStyle:process.platform==="linux"?"default":"hidden"',
-    "main-window titleBarStyle (native frame on Linux)",
-    guard="__ccNativeFrame")
-if _n_tb > 1:
-    raise RuntimeError("main-window titleBarStyle signature is no longer unique")
+_frame_patched = ('/*__ccNativeFrame*/titleBarStyle:process.platform'
+                  '==="linux"?"default":"hidden"')
+_n_undo = 0
+for _path in all_chunks():
+    _body = rd(_path)
+    if _frame_patched in _body:
+        wr(_path, _body.replace(_frame_patched, 'titleBarStyle:"hidden"'))
+        _n_undo += 1
+if _n_undo:
+    print("  Reverted the native-frame patch in " + str(_n_undo) + " chunk(s)")
+else:
+    print("  No native-frame patch to revert")
 
 # -- Make "keep computer awake" mean "while working", not "while running". -----
 #

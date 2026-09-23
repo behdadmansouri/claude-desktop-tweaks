@@ -54,7 +54,6 @@ patches = s.get("patches", {})
 patch_html = "".join(
     "<li>" + e(label) + " " + pill(patches.get(key, False), "applied", "not applied") + "</li>"
     for key, label in (
-        ("nativeFrame", "native window frame (KWin decorates)"),
         ("workAwareKeepAwake", "keep-awake released when idle"),
     )
 )

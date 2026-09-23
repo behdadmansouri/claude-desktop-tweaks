@@ -165,7 +165,6 @@ cmd_status() {
       "$(asar_has_patch "$PATCHED_ASAR"  "$2" && echo applied || echo 'not applied')" \
       "$(asar_has_patch "$OFFICIAL_ASAR" "$2" && echo applied || echo 'not applied')"
   }
-  _mp "native window frame"    '__ccNativeFrame'
   _mp "work-aware keep-awake"  '__ccWorkActive'
   _mp "folder one-click open"  'if(__cc)return __cc;'
   _mp "folder-picker default"  '+"/Documents/AI Projects")'
@@ -197,7 +196,6 @@ cmd_json() {
   OFFICIAL_RUN="$(running_official && echo 1 || echo 0)" \
   PATCHED_UI="$(asar_has_patch "$PATCHED_ASAR" 'cc-ai-data-v2' && echo 1 || echo 0)" \
   OFFICIAL_UI="$(asar_has_patch "$OFFICIAL_ASAR" 'cc-ai-data-v2' && echo 1 || echo 0)" \
-  FRAME="$(asar_has_patch "$PATCHED_ASAR" '__ccNativeFrame' && echo 1 || echo 0)" \
   KEEPAWAKE="$(asar_has_patch "$PATCHED_ASAR" '__ccWorkActive' && echo 1 || echo 0)" \
   STALE="$(patch_stale "$PATCHED_ASAR" && echo 1 || echo 0)" \
   SHARED="$(sessions_shared && echo 1 || echo 0)" \
@@ -216,7 +214,7 @@ print(json.dumps({
         {"name": "official", "version": g("OFFICIAL_VER") or "not installed",
          "running": g("OFFICIAL_RUN") == "1", "customUI": g("OFFICIAL_UI") == "1"},
     ],
-    "patches": {"nativeFrame": g("FRAME") == "1", "workAwareKeepAwake": g("KEEPAWAKE") == "1"},
+    "patches": {"workAwareKeepAwake": g("KEEPAWAKE") == "1"},
     "patchStale": g("STALE") == "1",
     "sessions": {"shared": g("SHARED") == "1", "count": int(g("SESSIONS") or 0)},
     "keepAwake": g("KASTATE"),
