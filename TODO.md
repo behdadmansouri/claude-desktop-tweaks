@@ -6,6 +6,10 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 
 ## ⚡ Next up
 
+- [ ] 🤖 **Re-anchor the project panel** `M` - its anchor class `.flex.flex-wrap.gap-g5` is gone
+      from the new-session page, so the panel never installs. Read the next `[cc-dump]` `wsRow`
+      line in `~/.config/ClaudeOfficial/logs/claude.ai-web.log` and pick a semantic anchor.
+
 - [ ] 🤖 **Find a new base for the patched build** `L` `think` - its AUR package is gone, so it
       can no longer update at all. [memory/maintenance.md](memory/maintenance.md) compares the
       options.
