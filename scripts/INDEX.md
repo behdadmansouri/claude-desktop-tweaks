@@ -3,6 +3,9 @@ Files in this folder.
 
 | File | Purpose |
 |------|---------|
+| `cdp.py` | Live DOM introspection of the running app over Chrome DevTools Protocol |
+| `install.sh` | UI patcher installer, Linux and macOS |
+| `install.ps1` | UI patcher installer, Windows |
 | `remote-scan.sh` | Runs ON each ssh host (embedded by `update-ui.sh`, not copied there): lists `~/AI Projects/*`, last commit, session and TODO mtimes, TODO text. Read-only. A file so its dollar signs never meet the unquoted heredoc |
 | `update-ui.sh` | Patch + deploy tool. `--official` targets the official build instead, `--prefix DIR` anything else. Also makes "keep computer awake" mean *while working*: it rewrites the app's `keepAwakeEnabled` claim to consult `__ccWorkActive()` and re-checks every 60s |
 | `claude-ctl.sh` | **The control surface.** `claude-ctl` (on PATH via `~/.local/bin`) shows versions, which build is running, which main-process patches are applied, patch freshness, session sharing, and every power/lock inhibitor KDE currently holds. Also acts: `patch`, `update`, `share`/`unshare`, `quit`, `json`, `page` |
