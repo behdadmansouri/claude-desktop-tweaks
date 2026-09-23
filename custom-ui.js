@@ -3763,27 +3763,34 @@ function ccDump() {
 // reports the ancestry of every menu button so a replacement anchor can be
 // measured rather than guessed.
 function dgWsRow() {
+  // 2026-09-23: the first version took the first 8 menu buttons in the
+  // document, which are all sidebar rows, so it never saw the composer. Now:
+  // every button outside the sidebar, plus the composer's own ancestry.
+  const inSidebar = b => !!b.closest('.dframe-sidebar-body,.dframe-sidebar,nav,[data-testid="sidebar-recents"]');
+  const lbl = b => { try { return labelsOf(b).slice(0, 3); } catch (_) { return [(b.getAttribute('aria-label') || b.textContent || '').trim()]; } };
+  const btns = [...document.querySelectorAll('button')].filter(b => !inSidebar(b)).slice(0, 30);
   const out = [];
-  const btns = [...document.querySelectorAll('button[aria-haspopup="menu"]')].slice(0, 8);
   for (const btn of btns) {
     const r = btn.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
     const chain = [];
     let el = btn.parentElement;
-    for (let i = 0; i < 6 && el && el !== document.body; i++, el = el.parentElement) {
+    for (let i = 0; i < 4 && el && el !== document.body; i++, el = el.parentElement) {
       const cs = getComputedStyle(el);
-      const er = el.getBoundingClientRect();
       chain.push({
         tag: el.tagName.toLowerCase(),
         cls: (el.className && el.className.baseVal !== undefined
-                ? el.className.baseVal : String(el.className || '')).slice(0, 160),
-        rect: [Math.round(er.x), Math.round(er.y), Math.round(er.width), Math.round(er.height)],
+                ? el.className.baseVal : String(el.className || '')).slice(0, 120),
         menuBtns: el.querySelectorAll('button[aria-haspopup="menu"]').length,
-        display: cs.display, wrap: cs.flexWrap, gap: cs.gap,
-        attrs: [...el.attributes].map(a => a.name).filter(n => n.startsWith('data-')).slice(0, 6),
+        btns: el.querySelectorAll('button').length,
+        display: cs.display, wrap: cs.flexWrap,
+        attrs: [...el.attributes].filter(a => a.name.startsWith('data-')).map(a => a.name + '=' + a.value.slice(0, 30)).slice(0, 6),
       });
     }
     out.push({
-      label: (btn.getAttribute('aria-label') || btn.textContent || '').trim().slice(0, 60),
+      labels: lbl(btn),
+      popup: btn.getAttribute('aria-haspopup'),
+      attrs: [...btn.attributes].filter(a => a.name.startsWith('data-')).map(a => a.name + '=' + a.value.slice(0, 30)).slice(0, 6),
       rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
       chain,
     });
@@ -3791,9 +3798,19 @@ function dgWsRow() {
   return {
     path: location.pathname,
     legacyAnchors: document.querySelectorAll('.flex.flex-wrap.gap-g5').length,
-    menuButtons: btns.length,
+    menuButtons: document.querySelectorAll('button[aria-haspopup="menu"]').length,
     rows: out,
   };
+}
+
+// The workspace row only exists on the new-session page, which is rarely the
+// page open 6s after launch. Dump once per distinct path instead.
+let _dgPaths = new Set();
+function dgOnRoute() {
+  const p = location.pathname;
+  if (_dgPaths.has(p) || _dgPaths.size > 20) return;
+  _dgPaths.add(p);
+  setTimeout(() => { try { ccDump(); } catch (e) { console.error('[cc-dump] failed', e); } }, 2500);
 }
 
 function dgBootstrap() {
@@ -3803,6 +3820,7 @@ function dgBootstrap() {
   if (off) return;
   // Late enough that the composer footer and sidebar have rendered.
   setTimeout(() => { try { ccDump(); } catch (e) { console.error('[cc-dump] failed', e); } }, 6000);
+  setInterval(dgOnRoute, 2000);
 }
 
 // ─────────────────────────────────────────────────────────────
