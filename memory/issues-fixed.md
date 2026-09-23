@@ -261,7 +261,7 @@ previous Local folder. That bogus pair persisted in `cc-ws-v4` forever, and clic
 is open; `cleanLabel()` strips `\p{Cc}\p{Cf}\p{Co}` and collapses whitespace, and `recordWS`
 dedupes case-insensitively on the cleaned value. Right-clicking a remote tile calls `forgetWS()` to
 drop a bad entry (remote tiles only - Local tiles come from `cc-folders.json`, so forgetting one
-wouldn't remove it). Real SSH folders live under `/root/000_myagents/...`, confirmed in
+wouldn't remove it). Real SSH folders live under `/root/AI Projects/...` (renamed from `/root/000_myagents` before 2026-08-10; the old name survives on myserver as a symlink, so recorded paths still resolve), confirmed in
 `~/.config/Claude/claude_desktop_config.json` (`epitaxyPrefs/epitaxy-folder-permission-mode.*`).
 
 **Lesson:** scraping UI labels on a timer records transitional states. Sample twice and require
