@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Background update check for both Claude Desktop builds, plus a "is the patch
+# Background update check for the official Claude Desktop build, plus a "is the patch
 # still current" check for this repo.
 #
 # Deliberately does NOT install anything. Every install path here needs either
@@ -22,7 +22,6 @@ mkdir -p "$CACHE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PATCHED_ASAR="$HOME/.local/lib/claude-desktop-patched/usr/lib/claude-desktop/resources/app.asar"
 OFFICIAL_ASAR="$HOME/.local/lib/claude-desktop-official/usr/lib/claude-desktop/resources/app.asar"
 OFFICIAL_STAMP="$HOME/.local/lib/claude-desktop-official/.installed-version"
 REPO="https://downloads.claude.ai/claude-desktop/apt/stable"
@@ -63,34 +62,15 @@ if [[ -n "$deb_arch" ]]; then
   fi
 fi
 
-# ── 2. The patched build's upstream package ──────────────────────────────────
-# claude-desktop-appimage was dropped from the AUR on 2026-08-14, which is why
-# scripts/update-appimage.sh cannot work. Re-checked each run rather than
-# hardcoded, because it may well come back.
-have="$(pacman -Q claude-desktop-appimage 2>/dev/null | awk '{print $2}')"
-aur="$(curl -fsSL --max-time 15 \
-  'https://aur.archlinux.org/rpc/v5/info?arg[]=claude-desktop-appimage' 2>/dev/null \
-  | grep -o '"Version":"[^"]*"' | head -1 | cut -d'"' -f4)"
-if [[ -z "$have" ]]; then
-  out+=("patched: claude-desktop-appimage not installed")
-elif [[ -z "$aur" ]]; then
-  out+=("patched: $have installed; package still absent from the AUR (pinned)")
-elif [[ "$have" == "$aur" ]]; then
-  out+=("patched: current ($have)")
-else
-  out+=("patched: $have -> $aur AVAILABLE - scripts/update-appimage.sh")
-fi
-
-# ── 3. Is the deployed asar built from the current sources? ──────────────────
+# ── 2. Is the deployed asar built from the current sources? ──────────────────
 # The single most common way this project breaks is editing custom-ui/ and
 # forgetting to re-run update-ui.sh, which looks exactly like "the fix didn't
 # work". Comparing mtimes catches it for free.
 # Checked for both builds since the official one became a daily driver too: it
 # is the build whose patch actually disappears on its own, because its installer
 # replaces the entire prefix.
-for build in patched official; do
-  if [[ $build == patched ]]; then asar="$PATCHED_ASAR"; flag=""
-  else                             asar="$OFFICIAL_ASAR"; flag=" --official"; fi
+for build in official; do
+  asar="$OFFICIAL_ASAR"; flag=" --official"
   [[ -f "$asar" ]] || continue
   if ! grep -qa 'cc-ai-data-v2' "$asar" 2>/dev/null; then
     out+=("patch[$build]: MISSING - the deployed asar carries no custom UI - ./scripts/update-ui.sh$flag")

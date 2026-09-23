@@ -9,13 +9,6 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 - [ ] 🤖 **Release the project switcher as open source** `L` - moved to
       `../Claude Project Switcher 🗂️/` (plan in its `docs/plan.md`); this folder stays the private source.
 
-- [ ] 🤖 **Find a new base for the patched build** `L` `think` - its AUR package is gone, so it
-      can no longer update at all. [memory/maintenance.md](memory/maintenance.md) compares the
-      options.
-
-- [ ] 🤖 **Rewrite the `update-claude-desktop` skill** `S` - it drives a dead script. Do it with
-      the decision above.
-
 ## 🔍 Verification
 
 Standing checks, not tasks. They move to the changelog once they have held up for a few days.
@@ -36,5 +29,5 @@ Standing checks, not tasks. They move to the changelog once they have held up fo
       the conversation half is not.
 
 - [ ] 🤖 **The official build is still patched after it updates** - its installer replaces the
-      whole prefix, and now re-patches itself; `claude-ctl` reports all four main-process patches
-      per build. Unverified until the 1.40609.1 update actually runs.
+      whole prefix, and now re-patches itself; `check-updates.sh` reports whether the deployed patch
+      is missing or stale. Unverified until the next official update actually runs.

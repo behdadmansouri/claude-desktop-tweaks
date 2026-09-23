@@ -52,20 +52,18 @@ CUSTOM="$PROJECT_DIR/custom-ui.js"
 # signature rather than by version or filename, so the same patch applies to
 # either build - the only thing that differs is the prefix.
 #
-#   (default)     ~/.local/lib/claude-desktop-patched   -- the daily driver
-#   --official    ~/.local/lib/claude-desktop-official  -- Anthropic's own build
+#   (default)     ~/.local/lib/claude-desktop-official  -- Anthropic's own build
+#                 (the old patched build was deleted 2026-09-23; --official is now a no-op)
 #   --prefix DIR  anything else
 #
 # The official build is REVERTED by scripts/install-official.sh on every update,
 # because that script replaces the whole prefix. Re-run this with --official
 # afterwards; there is nothing here that persists across a reinstall.
-TARGET="patched"
-PATCHED_ROOT="$HOME/.local/lib/claude-desktop-patched"
+TARGET="official"
+PATCHED_ROOT="$HOME/.local/lib/claude-desktop-official"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --official)
-      TARGET="official"
-      PATCHED_ROOT="$HOME/.local/lib/claude-desktop-official"
       shift ;;
     --prefix)
       TARGET="custom"

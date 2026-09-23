@@ -6,19 +6,15 @@ operator's page. Everything below is already on `PATH` via `~/.local/bin`.
 ## Day to day
 
 ```bash
-claude-ctl            # what is installed, running, patched, shared, holding sleep open
-claude-ctl page       # regenerate dashboard.html, then open it
-claude-quit           # kill every Claude process
+claude-quit                     # kill every Claude process
+./scripts/check-updates.sh --report   # last update-check result (also shown at session start)
+./scripts/install-official.sh   # install the newest official build, then re-apply the patch
 ```
-
-`claude-ctl` reads `check-updates.sh`'s cached answer for the network half, so it is fast and
-works offline. It never installs anything on its own.
 
 ## Changing the patched UI
 
 ```bash
-./scripts/update-ui.sh          # rebuild custom-ui.js from custom-ui/ and re-patch
-./scripts/update-ui.sh --official   # same, against the official build
+./scripts/update-ui.sh          # rebuild custom-ui.js from custom-ui/ and re-patch the official build
 claude-quit                     # restart to load it
 ```
 
@@ -39,12 +35,5 @@ Edit `custom-ui/*.js`, never `custom-ui.js` (a build artifact). The file registr
 
 ## Updating
 
-```bash
-claude-ctl update         # install what is available, then re-patch
-claude-ctl update --force # ... even while the app is running
-```
-
-There is no autoupdate timer (retired 2026-09-23); run it by hand after quitting the app.
-
-The patched build currently has **no update source** (the AUR package was removed 2026-08-14);
-only the official build updates. See TODO.md.
+Run `./scripts/install-official.sh` after quitting the app; it re-applies the patch itself.
+There is no autoupdate timer and no patched build (both retired 2026-09-23).
