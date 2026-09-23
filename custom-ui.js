@@ -188,7 +188,10 @@ function shortText(text) {
 }
 
 const CC_TODOS = (typeof CC_AI_TODOS !== 'undefined') ? CC_AI_TODOS : {};
-function ccTodo(folder) {
+function ccTodo(folder, host) {
+  // A remote path can collide with a local one, or with the same path on another
+  // host, so remote text lives in overview.js's per-host scan, never in CC_TODOS.
+  if (host) return remoteTodo(host, folder);
   const live = (typeof window.__CC_TODOS__ === 'object' && window.__CC_TODOS__) || null;
   if (live && live[folder] != null) return live[folder];
   return CC_TODOS[folder];
@@ -218,8 +221,8 @@ const OPEN_BOX_RE  = /^[ \t]*[-*+][ \t]+\[[ \t]\]/gm;
 const DONE_BOX_RE  = /^[ \t]*[-*+][ \t]+\[[xX]\]/gm;
 const _countRe = (text, re) => { re.lastIndex = 0; return (text.match(re) || []).length; };
 
-function todoCounts(folder) {
-  const text = ccTodo(folder);
+function todoCounts(folder, host) {
+  const text = ccTodo(folder, host);
   if (typeof text !== 'string' || !text) return null;
   const open = _countRe(text, OPEN_BOX_RE);
   const done = _countRe(text, DONE_BOX_RE);
@@ -1120,13 +1123,26 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // along with the ground - a 3-open project rendered its number at 42%
   // strength, i.e. the quietest projects were also the hardest to read.
   // Colours live in css.js so they can be theme-paired; see the note there.
-  const counts = todoCounts(folder);
+  // Live dot: a Claude session wrote to this project in the last few minutes.
+  // Green, and deliberately not the TODO badge's colour, so "busy right now" and
+  // "has open items" never read as the same signal.
+  const info = projInfo(folder, host);
+  if (info.live) {
+    const dot = document.createElement('span');
+    dot.className = 'cc-live-dot';
+    dot.style.cssText = 'flex:none;width:6px;height:6px;border-radius:50%;background:#3fb950;' +
+      'pointer-events:none;' + (compact ? 'position:absolute;bottom:2px;right:2px;' : '');
+    if (compact) b.style.position = 'relative';
+    b.appendChild(dot);
+  }
+
+  const counts = todoCounts(folder, host);
   if (counts && counts.open > 0) {
     const n = counts.open;
     const level = n >= 10 ? 2 : n >= 4 ? 1 : 0;
     b.title = folder + '  —  ' + n + ' open' +
       (counts.done ? ' of ' + (n + counts.done) : '') +
-      (opts.removable ? '  (right-click to forget)' : '');
+      (opts.removable && (!opts.removableFn || opts.removableFn(folder)) ? '  (right-click to forget)' : '');
 
     if (compact) {
       // The tile is a fixed square and the badge sits on its corner, so the
@@ -1168,7 +1184,7 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
   // the Local list comes from cc-folders.json, so removing it from cc-ws-v4
   // wouldn't make the tile disappear. No confirm dialog - the entry re-records
   // itself the next time the workspace is actually used.
-  if (opts.removable) {
+  if (opts.removable && (!opts.removableFn || opts.removableFn(folder))) {
     // Only when the TODO badge hasn't already written a richer title (which
     // includes the same hint) - otherwise the count is thrown away here.
     if (!counts || !counts.open) b.title = folder + '  (right-click to forget)';
@@ -1178,6 +1194,10 @@ function makeFolderBtn(conn, folder, wsRow, opts = {}) {
       forgetWS(conn, folder);
     };
   }
+  // Tooltip tail: when it was last touched, and how much is waiting on you.
+  b.title += '  ·  ' + (info.live ? 'live now' : 'active ' + ageLabel(info.ts)) +
+    (info.items.length ? '  ·  ' + info.items.length + ' waiting on you' : '');
+
   // Local folders read from the baked snapshot or the local-fs bridge; remote
   // ones are fetched over ssh on demand (see fetchDoc / cc-read-remote). Hooked
   // up unconditionally so a folder without a TODO.md clears the pane instead of
@@ -1237,7 +1257,13 @@ function buildColumn(conn, folders, wsRow) {
     hint.style.cssText = 'font-size:10px;opacity:.35;padding:2px 4px;';
     col.appendChild(hint);
   } else {
-    col.appendChild(folderGrid(conn, folders, wsRow, {mode: columnMode(folders)}));
+    const mode = columnMode(folders);
+    // The AI Projects folder itself is always first and is not a project: it sits
+    // above the lanes as its own row instead of being ranked among them.
+    const rootFolder = (typeof CC_AI_LOCAL !== 'undefined' && CC_AI_LOCAL[0]) || null;
+    const hasRoot = folders[0] === rootFolder;
+    if (hasRoot) col.appendChild(folderGrid(conn, [folders[0]], wsRow, {mode}));
+    col.appendChild(buildLanes(conn, hasRoot ? folders.slice(1) : folders, wsRow, {mode}));
   }
   return col;
 }
@@ -1248,7 +1274,7 @@ function buildColumn(conn, folders, wsRow) {
 // paths (/root/000_myagents/...) with no emoji convention, so an emoji-only
 // remote column would be empty. They're also the only removable entries -
 // they come from cc-ws-v4, not from the baked folder list.
-function buildRemoteColumn(groups, wsRow) {
+function buildRemoteColumn(groups, wsRow, recorded) {
   const col = document.createElement('div');
   col.style.cssText = 'flex:1;min-width:0;';
   col.appendChild(colHeader('Remote'));
@@ -1260,17 +1286,30 @@ function buildRemoteColumn(groups, wsRow) {
     col.appendChild(hint);
     return col;
   }
+  const tiny = (label, title, onClick) => {
+    const t = document.createElement('button');
+    t.type = 'button';
+    t.textContent = label;
+    t.title = title;
+    t.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;font:inherit;' +
+      'font-size:9px;font-weight:600;opacity:.45;padding:0 3px;cursor:pointer;';
+    t.onmouseenter = () => { t.style.opacity = '.85'; };
+    t.onmouseleave = () => { t.style.opacity = '.45'; };
+    t.onclick = e => { e.stopPropagation(); onClick(); };
+    return t;
+  };
   for (const host of hosts) {
+    const scan = _remote[host];
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:baseline;gap:4px;margin:6px 0 1px;';
     // The host name is a button: it opens the file browser at the server's
-    // root. Recorded folders only ever cover places you have already been, and
-    // a server you have never opened in this app would otherwise be a dead
-    // heading. This makes every configured host reachable on day one.
+    // root, so a server with nothing scanned or recorded is still reachable.
     const sub = document.createElement('button');
     sub.type = 'button';
     sub.title = 'Browse ' + host + ' over ssh';
-    sub.style.cssText = 'display:block;width:100%;text-align:left;border:0;background:transparent;' +
+    sub.style.cssText = 'flex:none;text-align:left;border:0;background:transparent;' +
       'color:inherit;font:inherit;font-size:9px;font-weight:600;opacity:.45;' +
-      'margin:4px 0 1px;padding:0 2px;cursor:pointer;';
+      'padding:0 2px;cursor:pointer;';
     sub.textContent = host + '  ⤢';
     sub.onmouseenter = () => { sub.style.opacity = '.8'; };
     sub.onmouseleave = () => { sub.style.opacity = '.45'; };
@@ -1279,21 +1318,41 @@ function buildRemoteColumn(groups, wsRow) {
       pinTodoPreview('/', host);
       setBrowsing(true);
     };
-    col.appendChild(sub);
-    // A configured host we have never seen a folder for. Saying so beats
-    // omitting the host, which reads as "this server doesn't exist".
+    row.appendChild(sub);
+    const status = document.createElement('span');
+    status.style.cssText = 'flex:1;min-width:0;font-size:9px;opacity:.4;overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap;';
+    if (scan && scan.state === 'loading') status.textContent = 'scanning…';
+    else if (scan && scan.state === 'err') { status.textContent = scan.error; status.title = scan.error; }
+    row.appendChild(status);
+    row.appendChild(tiny('↻', 'Rescan ' + host + ' for projects', () => ensureRemoteScans([host], true)));
+    if (scan && scan.state === 'ok') {
+      const on = inboxHostOn(host);
+      row.appendChild(tiny(on ? 'inbox ✓' : 'inbox ✗',
+        (on ? 'Its items are in your Inbox. Click to leave them out.' : 'Its items are left out of your Inbox. Click to include them.') +
+        (scan.user ? '  (ssh user: ' + scan.user + ')' : ''),
+        () => { setInboxHost(host, !on); rebuildPanel(); }));
+    }
+    col.appendChild(row);
+    // A configured host we have found nothing for. Saying so beats omitting the
+    // host, which reads as "this server doesn't exist".
     if (!groups[host].length) {
-      const none = document.createElement('div');
-      none.textContent = 'no folders recorded yet';
-      none.style.cssText = 'font-size:9px;opacity:.3;padding:1px 4px 3px;';
-      col.appendChild(none);
+      if (!scan || scan.state !== 'loading') {
+        const none = document.createElement('div');
+        none.textContent = scan && scan.state === 'err' ? 'could not scan' : 'no projects found';
+        none.style.cssText = 'font-size:9px;opacity:.3;padding:1px 4px 3px;';
+        col.appendChild(none);
+      }
       continue;
     }
     // Never emoji mode here - these are server paths with no emoji convention,
     // so the tile grid would come out empty. `remote:true` is what routes their
-    // previews through the ssh reader instead of the local snapshot.
-    col.appendChild(folderGrid(host, groups[host], wsRow, {
+    // previews through the ssh reader instead of the local snapshot. Only entries
+    // the app or this panel recorded can be forgotten; scanned ones would simply
+    // come back on the next scan.
+    col.appendChild(buildLanes(host, groups[host], wsRow, {
       removable: true, remote: true,
+      removableFn: f => recorded.has(host + '\n' + f),
       mode: nameMode() === 'emoji' ? 'short' : nameMode(),
     }));
   }
@@ -1845,6 +1904,17 @@ function buildShell(panel) {
     lab.onclick = e => e.stopPropagation();
     modes.appendChild(lab);
   }
+  // Inbox: everything that is waiting on you, across every project and host,
+  // instead of the project grid. Its label carries the count so the answer to
+  // "is anything waiting" is visible without opening it.
+  const inboxBtn = document.createElement('button');
+  inboxBtn.type = 'button';
+  inboxBtn.title = 'Show every open item that is waiting on you (🧍 items and Needs your call), across all projects';
+  inboxBtn.style.cssText = 'flex:none;border:0;border-radius:4px;color:inherit;cursor:pointer;' +
+    'font:inherit;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;' +
+    'padding:2px 6px;';
+  inboxBtn.onclick = e => { e.stopPropagation(); setInboxOn(!inboxOn()); rebuildPanel(); };
+  head.appendChild(inboxBtn);
   head.appendChild(modes);
 
   // Collapse exists for the zoomed-in case: at 150%+ the panel legitimately
@@ -1975,7 +2045,7 @@ function buildShell(panel) {
   panel.appendChild(head);
   panel.appendChild(body);
 
-  panel._els = {head, htitle, coll, body, list, prev, phead, ptitle, pbody, pedit};
+  panel._els = {head, htitle, coll, body, list, prev, phead, ptitle, pbody, pedit, inboxBtn};
   _prevTitle = ptitle;
   _prevBody = pbody;
   applyCollapsed(panel);
@@ -2024,6 +2094,7 @@ function rebuildPanel() {
   const panel = document.querySelector('.' + PANEL_CLS);
   if (!panel?._wsRow || !panel._els) return;
   const ws = loadWS();
+  noteOpenTimes(ws);
   const L = (typeof window.__CC_FOLDERS__ !== 'undefined' && window.__CC_FOLDERS__.length) ? window.__CC_FOLDERS__
     : (typeof CC_AI_LOCAL !== 'undefined') ? CC_AI_LOCAL
     : [...new Set(ws.filter(w => w.conn === 'Local').map(w => w.folder))];
@@ -2034,18 +2105,37 @@ function rebuildPanel() {
   // absent, which is what "I'm not seeing projects from my other servers"
   // looked like.
   const remote = {};
+  const recorded = new Set();   // conn + "\n" + folder: the entries that can be forgotten
   for (const name of (_sshHosts || [])) remote[name] ||= [];
   for (const {conn, folder} of [...ws, ...appRecentWorkspaces()]) {
     if (!conn || conn === 'Local' || !folder) continue;
     // A local path recorded against a connection name is still a local path.
     if (folder.startsWith(HOME_HINT)) continue;
     (remote[conn] ||= []);
+    recorded.add(conn + '\n' + folder);
     if (!remote[conn].includes(folder)) remote[conn].push(folder);
   }
+  // Then whatever the ssh scan found under each host's AI Projects folder.
+  for (const host of Object.keys(remote)) {
+    for (const p of _remote[host]?.projects || []) {
+      if (!remote[host].includes(p.path)) remote[host].push(p.path);
+    }
+  }
   loadSshHosts();
+  ensureActivity();
+  ensureRemoteScans(_sshHosts || []);
 
   const list = panel._els.list;
+  // A repaint (an activity tick, a finished scan) must not throw you back to the
+  // top of a long list you were scrolling.
+  const keepScroll = list.scrollTop;
   list.textContent = '';
+  const groups = collectInbox(L);
+  const waiting = groups.reduce((n, g) => n + g.items.length, 0);
+  const ib = panel._els.inboxBtn;
+  ib.textContent = 'Inbox ' + waiting;
+  ib.style.background = inboxOn() ? 'var(--bg-300,rgba(128,128,128,.28))' : 'transparent';
+  ib.style.opacity = inboxOn() || waiting ? '.95' : '.55';
   const cols = document.createElement('div');
   // 22px, and a hairline rule down the middle. The columns used to be 8px
   // apart, which is not a gutter - it's a seam. Crossing from a project in the
@@ -2054,12 +2144,13 @@ function rebuildPanel() {
   // is so the pointer has somewhere to be that isn't a project.
   cols.style.cssText = 'display:flex;gap:22px;align-items:stretch;';
   const localCol = buildColumn('Local', L, panel._wsRow);
-  const remoteCol = buildRemoteColumn(remote, panel._wsRow);
+  const remoteCol = buildRemoteColumn(remote, panel._wsRow, recorded);
   remoteCol.style.borderLeft = '1px solid var(--claude-border,rgba(128,128,128,.18))';
   remoteCol.style.paddingLeft = '18px';
   cols.appendChild(localCol);
   cols.appendChild(remoteCol);
-  list.appendChild(cols);
+  list.appendChild(inboxOn() ? buildInbox(groups, panel._wsRow) : cols);
+  list.scrollTop = keepScroll;
 
   // A pinned project outranks everything: rebuilding the list (a rename, a new
   // recorded remote) must not quietly drop what the user is reading.
@@ -2229,6 +2320,340 @@ function clampPanel(panel) {
     list.style.maxHeight = '';
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+//  OVERVIEW: what 30+ projects need from a panel that used to be an alphabetical grid.
+//
+//  Four things, all derived from files that already exist (no per-project upkeep):
+//    lanes   - Active / Waiting on you / Parked / Dormant, each sorted by recency
+//    live    - a dot on projects with a Claude session writing right now
+//    inbox   - every open item that is waiting on YOU, across every project and host
+//    remote  - the same projects, scanned over ssh from every configured host
+//
+//  Data arrives over two IPCs (cc-activity-v1, cc-scan-remote-v1 in update-ui.sh).
+//  Everything here is read-only; nothing in this file writes to a project.
+// ─────────────────────────────────────────────────────────────
+const DAY_MS       = 86400000;
+const ACTIVE_DAYS  = 7;
+const PARKED_DAYS  = 60;
+const LIVE_MS      = 3 * 60 * 1000;      // a transcript written this recently = live
+const REMOTE_TTL   = 5 * 60 * 1000;      // rescan a healthy host this often
+const REMOTE_RETRY = 60 * 1000;          // ...and a failing one this often
+const ACTIVITY_MS  = 30 * 1000;
+
+const INBOX_KEY    = 'cc-ws-inbox';
+const DORMANT_KEY  = 'cc-ws-dormant-open';
+const INBOX_SKIP   = 'cc-ws-inbox-hosts';   // {host: true|false} overrides the root-only default
+
+const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const inboxOn      = () => lsGet(INBOX_KEY) === '1';
+const setInboxOn   = v => lsSet(INBOX_KEY, v ? '1' : '0');
+const dormantOpen  = () => lsGet(DORMANT_KEY) === '1';
+
+// ── lanes ───────────────────────────────────────────────────────────────────
+//
+// Exclusive, first match wins. "Waiting on you" only catches projects that are
+// NOT recently active: a project you touched yesterday with a stale 🧍 line is
+// Active, but one that has gone quiet with your name on an open item is exactly
+// the one that is stuck on you, so it gets its own lane instead of decaying
+// silently into Parked.
+const LANES = [
+  {key: 'active',  label: 'Active',         tip: 'Commit or session in the last ' + ACTIVE_DAYS + ' days'},
+  {key: 'waiting', label: 'Waiting on you', tip: 'Quiet, with an open item that is yours (🧍 or Needs your call)'},
+  {key: 'parked',  label: 'Parked',         tip: 'Quiet for up to ' + PARKED_DAYS + ' days'},
+  {key: 'dormant', label: 'Dormant',        tip: 'Nothing for over ' + PARKED_DAYS + ' days (click to show)'},
+];
+
+function laneOf(ts, waiting, now) {
+  if (ts && now - ts <= ACTIVE_DAYS * DAY_MS) return 'active';
+  if (waiting) return 'waiting';
+  if (ts && now - ts <= PARKED_DAYS * DAY_MS) return 'parked';
+  return 'dormant';
+}
+
+function ageLabel(ts, now = Date.now()) {
+  if (!ts) return 'never';
+  const m = Math.max(0, Math.round((now - ts) / 60000));
+  if (m < 2) return 'just now';
+  if (m < 90) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 36) return h + 'h ago';
+  const d = Math.round(h / 24);
+  if (d < 60) return d + 'd ago';
+  return Math.round(d / 30) + 'mo ago';
+}
+
+// ── the inbox parser ────────────────────────────────────────────────────────
+//
+// Literal on purpose (same reasoning as the open-box counter): an unticked box
+// that is either marked 🧍 or sits under a "Needs your call" heading. Anything
+// looser starts listing the agent's own work as yours.
+//   call  - under a Needs-your-call / 🤔 heading
+//   you   - a 🧍 item anywhere else
+//   check - a 🧍 item under Verification (a standing check, ranked last)
+const ITEM_RE = /^[ \t]*[-*+][ \t]+\[[ \t]\][ \t]+(.*)$/;
+const HEAD_RE = /^#{1,6}[ \t]+(.*)$/;
+
+function cleanItem(s) {
+  // Size and model tags (`S`, `M`, `L`, `think`) are for whoever does the work.
+  return s.replace(/`(?:S|M|L|think)`[ \t]*/g, '').replace(/🧍|🤖|🤔/g, '').replace(/\*\*/g, '').replace(/`/g, '')
+    .replace(/\s+/g, ' ').replace(/ ([:,.])/g, '$1').trim().slice(0, 140);
+}
+
+function parseInbox(text) {
+  const out = [];
+  if (typeof text !== 'string' || !text) return out;
+  let heading = '';
+  for (const line of text.split('\n')) {
+    const h = line.match(HEAD_RE);
+    if (h) { heading = h[1]; continue; }
+    const m = line.match(ITEM_RE);
+    if (!m) continue;
+    const call = /needs your call|🤔/i.test(heading);
+    if (!call && !m[1].includes('🧍')) continue;
+    const kind = call ? 'call' : /verification/i.test(heading) ? 'check' : 'you';
+    out.push({kind, text: cleanItem(m[1])});
+  }
+  const rank = {call: 0, you: 1, check: 2};
+  return out.sort((a, b) => rank[a.kind] - rank[b.kind]);
+}
+
+// Parsing is a pass over up to 8KB per project, and the panel repaints often.
+const _inboxMemo = new Map();
+function inboxItems(folder, host) {
+  const text = ccTodo(folder, host);
+  if (typeof text !== 'string' || !text) return [];
+  let hit = _inboxMemo.get(text);
+  if (!hit) {
+    if (_inboxMemo.size > 200) _inboxMemo.clear();
+    hit = parseInbox(text);
+    _inboxMemo.set(text, hit);
+  }
+  return hit;
+}
+
+// ── local activity ──────────────────────────────────────────────────────────
+let _activity = {};
+let _activitySig = '';
+let _activityBusy = false;
+let _activityAt = 0;
+let _openTs = {};          // conn + "\n" + folder -> when this panel last opened it
+
+function ensureActivity(force) {
+  if (_activityBusy || !window.ccBridge?.activity) return;
+  if (!force && Date.now() - _activityAt < ACTIVITY_MS) return;
+  _activityBusy = true;
+  window.ccBridge.activity().then(a => {
+    _activityBusy = false;
+    _activityAt = Date.now();
+    if (!a || typeof a !== 'object') return;
+    const sig = JSON.stringify(a);
+    // Only repaint when something moved: this runs on a timer and a repaint
+    // resets the list's scroll position.
+    if (sig === _activitySig) return;
+    _activitySig = sig;
+    _activity = a;
+    rebuildPanel();
+  }).catch(() => { _activityBusy = false; });
+}
+
+function noteOpenTimes(ws) {
+  _openTs = {};
+  for (const w of ws) _openTs[w.conn + '\n' + w.folder] = Math.max(_openTs[w.conn + '\n' + w.folder] || 0, w.ts || 0);
+}
+
+// ── remote scan ─────────────────────────────────────────────────────────────
+const _remote = {};   // host -> {state:'loading'|'ok'|'err', at, user, error, projects, byPath}
+
+const remoteProject = (host, folder) => _remote[host]?.byPath?.[folder];
+const remoteTodo    = (host, folder) => remoteProject(host, folder)?.todo;
+
+function scanRemote(host) {
+  const prev = _remote[host] || {};
+  _remote[host] = {...prev, state: 'loading', at: Date.now()};
+  const done = patch => {
+    _remote[host] = {...(_remote[host] || {}), at: Date.now(), ...patch};
+    // Deferred: with no bridge this runs inside rebuildPanel itself.
+    queueMicrotask(rebuildPanel);
+  };
+  if (!window.ccBridge?.scanRemote) return done({state: 'err', error: 'no scan bridge - re-run update-ui.sh'});
+  window.ccBridge.scanRemote(host).then(r => {
+    if (!r || !r.ok) return done({state: 'err', error: (r && r.error) || 'scan failed'});
+    const byPath = {};
+    for (const p of r.projects || []) if (p && p.path) byPath[p.path] = p;
+    done({state: 'ok', error: '', user: r.user || '', projects: r.projects || [], byPath});
+  }).catch(e => done({state: 'err', error: String(e && e.message || e).slice(0, 120)}));
+}
+
+function ensureRemoteScans(hosts, force) {
+  for (const host of hosts) {
+    const r = _remote[host];
+    if (r && r.state === 'loading') continue;
+    if (!force && r && Date.now() - r.at < (r.state === 'err' ? REMOTE_RETRY : REMOTE_TTL)) continue;
+    scanRemote(host);
+  }
+}
+
+// A host counts toward the inbox by default only when its ssh user is root - the
+// admin's own servers. Other accounts on a shared host are other people's 🧍.
+// The per-host toggle overrides the default either way.
+function inboxHostOn(host) {
+  let o = {};
+  try { o = JSON.parse(lsGet(INBOX_SKIP) || '{}') || {}; } catch {}
+  if (typeof o[host] === 'boolean') return o[host];
+  return _remote[host]?.user === 'root';
+}
+function setInboxHost(host, on) {
+  let o = {};
+  try { o = JSON.parse(lsGet(INBOX_SKIP) || '{}') || {}; } catch {}
+  o[host] = !!on;
+  lsSet(INBOX_SKIP, JSON.stringify(o));
+}
+
+// ── what the tiles ask for ──────────────────────────────────────────────────
+//
+// "Last touched" is the newest Claude session transcript, falling back to the
+// last commit, then the TODO's mtime, only when the project has no session. Not
+// max() of them: a fleet sweep committed to 25 of 33 folders in one afternoon, and
+// with max() every one of them read as Active though nobody had worked in them for
+// a week. A session is you working; a commit can be anything.
+function projInfo(folder, host) {
+  const now = Date.now();
+  let ts = 0, live = false;
+  const a = host ? remoteProject(host, folder) : _activity[folder];
+  if (a) { ts = a.s || a.c || a.t || 0; live = !!a.s && now - a.s < LIVE_MS; }
+  // Opening a project from this panel counts as touching it: the closest thing
+  // to frecency available without tracking clicks separately.
+  ts = Math.max(ts, _openTs[(host || 'Local') + '\n' + folder] || 0);
+  // Standing checks (🧍 under Verification) are things to glance at, not things
+  // the project is blocked on, so they neither count nor move it to a lane.
+  const all = inboxItems(folder, host);
+  const items = all.filter(i => i.kind !== 'check');
+  return {ts, live, items, checks: all.length - items.length};
+}
+
+// ── rendering: lanes ────────────────────────────────────────────────────────
+function laneHeader(text, tip, onClick) {
+  const h = document.createElement(onClick ? 'button' : 'div');
+  if (onClick) { h.type = 'button'; h.onclick = e => { e.stopPropagation(); onClick(); }; }
+  h.title = tip;
+  h.style.cssText = 'display:block;width:100%;text-align:left;border:0;background:transparent;' +
+    'color:inherit;font:inherit;font-size:9px;font-weight:600;opacity:.5;letter-spacing:.04em;' +
+    'text-transform:uppercase;margin:7px 0 2px;padding:0 2px;' + (onClick ? 'cursor:pointer;' : '');
+  h.textContent = text;
+  return h;
+}
+
+// Projects grouped into lanes, each lane a normal folderGrid. `opts` is passed
+// straight through to it, so tiles look and behave exactly as before.
+function buildLanes(conn, folders, wsRow, opts = {}) {
+  const host = opts.remote ? conn : null;
+  const now = Date.now();
+  const buckets = {active: [], waiting: [], parked: [], dormant: []};
+  for (const f of folders) {
+    const i = projInfo(f, host);
+    buckets[laneOf(i.ts, i.items.length > 0, now)].push({f, ts: i.ts});
+  }
+  const wrap = document.createElement('div');
+  for (const lane of LANES) {
+    const arr = buckets[lane.key]
+      .sort((a, b) => (b.ts - a.ts) || a.f.localeCompare(b.f))
+      .map(x => x.f);
+    const shown = opts.mode === 'emoji' ? arr.filter(hasEmoji) : arr;
+    if (!shown.length) continue;
+    if (lane.key === 'dormant') {
+      const open = dormantOpen();
+      wrap.appendChild(laneHeader((open ? '▾ ' : '▸ ') + lane.label + ' · ' + shown.length, lane.tip,
+        () => { lsSet(DORMANT_KEY, open ? '0' : '1'); rebuildPanel(); }));
+      if (!open) continue;
+    } else {
+      wrap.appendChild(laneHeader(lane.label + ' · ' + shown.length, lane.tip));
+    }
+    wrap.appendChild(folderGrid(conn, arr, wsRow, opts));
+  }
+  return wrap;
+}
+
+// ── rendering: inbox ────────────────────────────────────────────────────────
+// Every project with something waiting on you, most recently touched first.
+function collectInbox(localFolders) {
+  const groups = [];
+  const add = (conn, host, folder) => {
+    const i = projInfo(folder, host);
+    if (i.items.length) groups.push({conn, host, folder, ts: i.ts, items: i.items, checks: i.checks});
+  };
+  for (const f of localFolders) add('Local', null, f);
+  for (const host of Object.keys(_remote)) {
+    if (!inboxHostOn(host)) continue;
+    for (const p of _remote[host].projects || []) add(host, host, p.path);
+  }
+  return groups.sort((a, b) => b.ts - a.ts);
+}
+
+const KIND_TAG = {call: '🤔', you: '🧍'};
+
+function buildInbox(groups, wsRow) {
+  const col = document.createElement('div');
+  col.style.cssText = 'min-width:0;';
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  col.appendChild(colHeader(total + ' waiting on you · ' + groups.length + ' projects'));
+  if (!groups.length) {
+    const none = document.createElement('div');
+    none.textContent = 'Nothing is waiting on you.';
+    none.style.cssText = 'font-size:11px;opacity:.5;padding:4px;';
+    col.appendChild(none);
+    return col;
+  }
+  for (const g of groups) {
+    const raw = g.folder.split('/').filter(Boolean).pop() || g.folder;
+    const row = document.createElement('div');
+    row.style.cssText = 'margin:0 0 8px;';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:baseline;gap:6px;font-size:11px;font-weight:600;';
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.title = g.folder;
+    name.textContent = emojiSuffix(raw) + (g.host ? '  · ' + g.host : '');
+    name.style.cssText = 'flex:1;min-width:0;text-align:left;border:0;background:transparent;' +
+      'color:inherit;font:inherit;cursor:pointer;padding:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    name.onclick = e => { e.stopPropagation(); pinTodoPreview(g.folder, g.host); };
+    const age = document.createElement('span');
+    age.textContent = ageLabel(g.ts);
+    age.style.cssText = 'flex:none;font-size:9px;font-weight:400;opacity:.5;';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.textContent = 'open ↗';
+    open.title = 'Start a session in this project';
+    open.style.cssText = 'flex:none;border:0;background:transparent;color:inherit;cursor:pointer;' +
+      'font:inherit;font-size:9px;font-weight:600;opacity:.6;padding:0 2px;';
+    open.onclick = e => { e.stopPropagation(); pinTodoPreview(g.folder, g.host); clickWorkspace(g.conn, g.folder, wsRow); };
+    head.append(name, age, open);
+    row.appendChild(head);
+    for (const it of g.items.slice(0, 6)) {
+      const li = document.createElement('div');
+      li.textContent = KIND_TAG[it.kind] + ' ' + it.text;
+      li.style.cssText = 'font-size:10.5px;line-height:1.35;opacity:.85;padding:1px 0 1px 4px;overflow-wrap:anywhere;';
+      row.appendChild(li);
+    }
+    const extra = g.items.length - 6, checks = g.checks || 0;
+    if (extra > 0 || checks) {
+      const more = document.createElement('div');
+      more.textContent = [extra > 0 ? '+' + extra + ' more' : '', checks ? checks + ' standing check' + (checks > 1 ? 's' : '') : '']
+        .filter(Boolean).join(' · ');
+      more.style.cssText = 'font-size:9px;opacity:.45;padding-left:4px;';
+      row.appendChild(more);
+    }
+    col.appendChild(row);
+  }
+  return col;
+}
+
+// Keep the live dots and lane assignments fresh while the panel is on screen.
+// One timer, and a no-op when the panel is not in the DOM.
+setInterval(() => {
+  if (document.querySelector('.' + PANEL_CLS)) ensureActivity(true);
+}, ACTIVITY_MS);
 
 // ─────────────────────────────────────────────────────────────
 //  PROJECT LABEL EMOJI

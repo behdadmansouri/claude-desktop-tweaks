@@ -29,6 +29,8 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/workspace.js"
   printf '\n'
+  cat "$MODULES_DIR/overview.js"
+  printf '\n'
   cat "$MODULES_DIR/labels.js"
   printf '\n'
   cat "$MODULES_DIR/session.js"
@@ -129,6 +131,11 @@ echo "  Main-process bundle: $(basename "$MAIN_BUNDLE")"
 echo "→ Embedding custom-ui.js..."
 python3 << PYEOF
 import json, os, re
+
+# The script the remote scan runs over ssh. A file, not a literal, so the dollar
+# signs in it are never seen by this unquoted heredoc.
+with open("$SCRIPT_DIR/remote-scan.sh", encoding="utf-8") as _sf:
+    scan_sh = _sf.read()
 
 AI_DIR = os.path.expanduser("~/Documents/AI Projects")
 try:
@@ -233,6 +240,8 @@ expose = (
     "listRemote:function(h,p){return _ipc.invoke('cc-list-remote-v2',h,p);},"
     "readRemote:function(h,p,f){return _ipc.invoke('cc-read-remote-v2',h,p,f);},"
     "sshConfigs:function(){return _ipc.invoke('cc-ssh-configs');},"
+    "activity:function(){return _ipc.invoke('cc-activity-v1');},"
+    "scanRemote:function(h){return _ipc.invoke('cc-scan-remote-v1',h);},"
     "listTree:function(p,r){return _ipc.invoke('cc-list-tree-v2',p,r);},"
     "listTreeRemote:function(h,p){return _ipc.invoke('cc-list-tree-remote-v2',h,p);},"
     "setTitle:function(t){return _ipc.invoke('cc-set-title',t);},"
@@ -678,14 +687,14 @@ docs = (
     "return{name:String(c.name||''),sshHost:String(c.sshHost||'')};})"
     ".filter(function(h){return h.name;})};}"
     "catch(e){return{ok:false,error:String(e&&e.message||e)};}});"
-    "function ssh(name,cmd){return new Promise(function(res){"
+    "function ssh(name,cmd,ms){return new Promise(function(res){"
     "var r=resolveHost(name);"
     "if(!okHost(r.target))return res({ok:false,error:'not an ssh host name'});"
     "var args=['-o','BatchMode=yes','-o','ConnectTimeout=6','-n'];"
     "if(r.id)args=args.concat(['-i',r.id]);"
     "args=args.concat([r.target,cmd]);"
     "cp.execFile('ssh',args,"
-    "{timeout:9000,maxBuffer:1048576},function(err,out,serr){"
+    "{timeout:ms||9000,maxBuffer:1048576},function(err,out,serr){"
     "if(err)return res({ok:false,error:(String(serr||err.message||err).split(chr10)[0]||'ssh failed').slice(0,160)});"
     "res({ok:true,out:String(out)});});});}"
     # The DISPLAY name is validated loosely here (it can contain spaces); the
@@ -724,6 +733,46 @@ docs = (
     "var files=r.out.split(chr10).map(function(s){return s.trim();})"
     ".filter(okName).sort(rank).slice(0,40);"
     "return{ok:true,files:files};});});"
+    # ── Overview data for the panel's lanes, live dot and remote projects.
+    #    Everything is read-only. Session transcripts are keyed by the folder path
+    #    with every non-alphanumeric turned into a dash, one dash per UTF-16 unit
+    #    (an emoji is two), which slugOf reproduces - measured against the real
+    #    directory names, not assumed.
+    "function slugOf(s){var o='';for(var i=0;i<s.length;i++){var c=s.charAt(i);"
+    "o+=((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9'))?c:'-';}return o;}"
+    "function mt(f){try{return fs.statSync(f).mtimeMs;}catch(_){return 0;}}"
+    "function newestJsonl(dir){var best=0;try{var fl=fs.readdirSync(dir);"
+    "for(var i=0;i<fl.length;i++){if(fl[i].slice(-6)!=='.jsonl')continue;"
+    "var m=mt(p.join(dir,fl[i]));if(m>best)best=m;}}catch(_){}return best;}"
+    "_e.ipcMain.handle('cc-activity-v1',function(){var out={};try{"
+    "var CP=p.join(os.homedir(),'.claude','projects');"
+    "var names=fs.readdirSync(ROOT,{withFileTypes:true}).filter(function(e){"
+    "return e.isDirectory()&&e.name.charAt(0)!=='.'&&e.name.indexOf('Archived')!==0;})"
+    ".map(function(e){return p.join(ROOT,e.name);});"
+    "names.unshift(ROOT);"
+    "for(var i=0;i<names.length;i++){var f=names[i];"
+    "out[f]={c:mt(p.join(f,'.git','logs','HEAD')),"
+    "s:newestJsonl(p.join(CP,slugOf(f))),t:mt(p.join(f,'TODO.md'))};}"
+    "}catch(_){}return out;});"
+    # The scan itself lives in scripts/remote-scan.sh and is embedded as a string,
+    # so no shell syntax has to survive this heredoc.
+    "var SCAN=" + json.dumps(scan_sh) + ";"
+    "_e.ipcMain.handle('cc-scan-remote-v1',function(ev,host){"
+    "if(!okName2(host))return Promise.resolve({ok:false,error:'bad host name'});"
+    "return ssh(host,'sh -c '+q(SCAN),25000).then(function(r){"
+    "if(!r.ok)return r;"
+    "var TAB=String.fromCharCode(9),MK='@@CC@@';"
+    "var user='',slugs={},projects=[],cur=null;"
+    "var lines=r.out.split(chr10);"
+    "for(var i=0;i<lines.length;i++){var ln=lines[i];"
+    "if(ln.indexOf(MK)===0){var kind=ln.charAt(MK.length),f=ln.split(TAB);cur=null;"
+    "if(kind==='U')user=(f[1]||'').trim();"
+    "else if(kind==='S')slugs[f[1]]=(Number(f[2])||0)*1000;"
+    "else if(kind==='P'){cur={path:f[1],c:(Number(f[2])||0)*1000,"
+    "t:(Number(f[3])||0)*1000,todo:''};projects.push(cur);}}"
+    "else if(cur)cur.todo+=ln+chr10;}"
+    "for(var j=0;j<projects.length;j++)projects[j].s=slugs[slugOf(projects[j].path)]||0;"
+    "return{ok:true,user:user,projects:projects.slice(0,200)};});});"
     "}catch(_){}})();" + BLOCK_D + "\n"
 )
 ix = ix + docs

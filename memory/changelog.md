@@ -4,6 +4,14 @@ Feature-level, dated, append-only. Not a per-commit log (`git log` covers that) 
 log. Bug *post-mortems* live in [issues-fixed.md](issues-fixed.md); this is the "what shipped,
 in what order" view.
 
+## 2026-09-23
+
+- **The project panel copes with 30+ projects:** lanes (Active / Waiting on you / Parked /
+  Dormant) ranked by last Claude session, a green dot on projects with a live session, and an Inbox
+  of every open 🧍 / Needs-your-call item across all projects.
+- **Remote projects are scanned, not just remembered:** every configured ssh host is listed over
+  ssh and shown in the Remote column with the same tiles, counts and lanes as local ones.
+
 ## 2026-09-01
 
 - **The official Claude Desktop build now carries the custom UI.** It has gone from a side-by-side

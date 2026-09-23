@@ -17,6 +17,10 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 
 Standing checks, not tasks. They move to the changelog once they have held up for a few days.
 
+- [ ] 🧍 **After a restart, the panel shows lanes, an Inbox button and scanned remote projects** -
+      Myserver, MyHostinger and Dad should list their `~/AI Projects` folders under Remote; a host
+      that says "could not scan" names its ssh error.
+
 - [ ] 🧍 **The project panel shows on a new session** - it sits beside the composer on the
       page where you pick a folder. Missing again means the `epitaxy-env-pill` test id moved.
 

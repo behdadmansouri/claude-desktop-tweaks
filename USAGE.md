@@ -25,6 +25,18 @@ claude-quit                     # restart to load it
 Edit `custom-ui/*.js`, never `custom-ui.js` (a build artifact). The file registry in
 [AGENTS.md](AGENTS.md) says which module owns what.
 
+## The project panel (new-session page)
+
+- **Lanes:** Active (a Claude session in the last 7 days, else last commit), Waiting on you
+  (quiet, with an open 🧍 or Needs-your-call item), Parked (up to 60 days), Dormant (older;
+  click its header to open). Each lane is newest first.
+- **Green dot:** a session wrote to that project in the last 3 minutes.
+- **Inbox N:** every open 🧍 / Needs-your-call item across all projects and hosts. Standing checks
+  under Verification are not counted. "open ↗" on a row starts a session there.
+- **Remote column:** scans `~/AI Projects` over ssh on every configured host when the panel opens
+  and every 5 minutes after. `↻` rescans one host. A host feeds the Inbox by default only when its
+  ssh user is root; `inbox ✓/✗` on its heading overrides that.
+
 ## Updating
 
 ```bash
