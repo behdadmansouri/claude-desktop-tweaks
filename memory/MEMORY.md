@@ -1,5 +1,11 @@
 # Memory Index - Claude Desktop Project
 
+This folder stays flat past the usual ~8-file threshold on purpose: half of it is harness-owned
+auto-memory (this file plus the `project_*.md` atoms it indexes with relative links, symlinked in
+from `~/.claude/projects/`), which cannot be moved into subfolders without breaking that index.
+The hand-written docs below are the only part that is ours to group, and eight is the threshold,
+not past it.
+
 ## Wiki
 - [architecture.md](architecture.md) - patching stack, preload sandbox, dframe redesign, titlebar modes, workspace click
 - [features.md](features.md) - feature status (implemented / partial / not yet)
@@ -8,6 +14,8 @@
 - [maintenance.md](maintenance.md) - deploy workflow, folder renames, AppImage upgrades
 - [issues-fixed.md](issues-fixed.md) - bug history with root causes (#1-50) + the update-ui.sh heredoc gotcha
 - [perf-security.md](perf-security.md) - security and performance review
+- [changelog.md](changelog.md) - dated, append-only record of what shipped, in order; post-mortems stay in issues-fixed.md
+- [todo-archive.md](todo-archive.md) - detail trimmed out of TODO.md when items were shortened; not read unless a short item needs unpacking
 
 ## Notes
 - [Always push](always-push.md) - finish work by pushing, not just committing; an unpushed branch reads as a Create PR prompt

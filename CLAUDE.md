@@ -161,63 +161,11 @@ Electron processes risks LevelDB corruption.
 
 ---
 
-## 📖 Glossary
-
-Shared shorthand between the user and this project's agent, mined from past sessions.
-
-| Term | Means |
-|---|---|
-| the panel / project selector / the widget | `custom-ui/workspace.js`'s project picker next to the composer, the one feature this project exists to ship |
-| patched build / official build | the two installs: AUR `claude-desktop-appimage` at `~/.local/lib/claude-desktop-patched`, and Anthropic's own Linux app at `~/.local/lib/claude-desktop-official` (the daily driver since 2026-09-01) |
-| the workspace row | the folder/connection pill row under the new-session composer that the panel anchors to; its selectors keep breaking on claude.ai rebuilds |
-| `claude-ctl` | the one control surface for both builds: versions, which patches landed, freshness, session sharing, power inhibitors; also acts (`patch`/`update`/`share`/`quit`) |
-| the usage chip | `custom-ui/usage.js`'s live context/5-hour/weekly indicator, polling the app's own `/usage` endpoint instead of scraping the popover |
-| measure, don't guess | this project's standing rule: extend `diag.js`/`workspace.js` probes and read a real DOM dump from the log before writing a selector fix, never guess an anchor |
-| the heredoc hazard | `update-ui.sh`'s python patcher block is an UNQUOTED heredoc: a stray backtick, `$(`, or backslash escape in a comment gets executed as shell, not read as text |
-| session sharing | `scripts/share-sessions.sh` symlinking `claude-code-sessions` so both builds' session indexes are one directory; transcripts were already shared, this was the last gap |
-| the July scope trim | the 2026-07-12 cut-down to just the project panel, deleting `sidebar.js`/`fbar.js`/`topbar.js`/`usage.js`/`banners.js`; a recurring source of "X was deleted here" bugs (`sampleWS`, the topbar hider) |
-| TODO simplification fleet | the reusable Sonnet-agent-per-project procedure that trims every project's `TODO.md`; invoked with "Run the TODO simplification fleet", brief stored at root `memory/reference/reference_todo_simplify_fleet.md` |
-| `sampleWS` | the recorder that logs a clicked remote folder into `cc-ws-v4`; got silently deleted in the July trim and had to be restored once the Remote column needed it again |
+@glossary.md
 
 ---
 
-## File Registry
-
-| File | Purpose |
-|------|---------|
-| `custom-ui/css.js` | Base CSS injection (sidebar leading-slot spacing, dark-mode workspace-panel override) |
-| `custom-ui/workspace.js` | The project selector panel: two-pane box sized from the viewport, folder click, pinned markdown preview of any `.md`/`.txt` in the folder (local via IPC, remote via ssh), emoji/short/full name modes, yields to the app's own dialogs, `emojiSuffix`, `_seenDialogs` |
-| `custom-ui/overview.js` | What makes 30+ projects usable: Active / Waiting on you / Parked / Dormant lanes sorted by last Claude session, the live-session dot, the Inbox of every open 🧍 / Needs-your-call item, and the per-host remote scan cache. Data over `cc-activity-v1` and `cc-scan-remote-v1` |
-| `scripts/remote-scan.sh` | Runs ON each ssh host (embedded by `update-ui.sh`, not copied there): lists `~/AI Projects/*`, last commit, session and TODO mtimes, TODO text. Read-only. A file so its dollar signs never meet the unquoted heredoc |
-| `custom-ui/session.js` | What the current route is a session *of*: project folder, title, model, and the last turn's token count, via the `cc-session-info` IPC (the app's own session record + the transcript tail). One cache shared by the title watcher and the usage chip |
-| `custom-ui/labels.js` | Puts the folder's emoji back on sidebar project groups that the app names after a git remote (`label:project-owner/repo`) instead of after their folder. Map baked from each folder's `.git/config` by `update-ui.sh` as `CC_AI_REPOS`; `cc-repo-emoji=0` disables |
-| `custom-ui/usage.js` | Live usage chip (context / 5-hour / weekly + time to reset). Polls `/api/organizations/<org>/usage` - the app's own tray-usage endpoint - instead of scraping the popover, which is why it can actually stay current. Debug with `window.__ccUsage()`. Endpoint + payload shape: `memory/architecture.md` |
-| `custom-ui/diag.js` | DOM beacon. CDP is blocked, so this is how a selector gets *measured* instead of guessed: one JSON line to the renderer log with usage buttons, top-bar drag regions, what constrains the chat column's width, and any limit nags. `window.__ccDump()`, or automatically 6s after load unless `localStorage['cc-diag']='0'` |
-| `custom-ui/bootstrap.js` | Scan loop + bootstrap (`injectBaseCSS` + `installUsage` + `dgBootstrap` + `installPanel` + `dismissLimitNags`) |
-| `custom-ui/titlewatch.js` | Sets `document.title` to the project folder plus the active session/conversation title (`Claude Desktop 🤖 · Sidebar emoji fix`) so outside tools can read it. The app resets it to "Claude" on navigation, so it re-applies on a MutationObserver. Debug with `window.__ccTitleDebug()` in DevTools. Consumed by the Timekeeper project's ActivityWatch window watcher, which otherwise only ever sees the window titled "Claude" |
-| `custom-ui.js` | Build artifact -- generated by `update-ui.sh` from modules above |
-| `scripts/update-ui.sh` | Patch + deploy tool. `--official` targets the official build instead, `--prefix DIR` anything else. Also makes "keep computer awake" mean *while working*: it rewrites the app's `keepAwakeEnabled` claim to consult `__ccWorkActive()` and re-checks every 60s |
-| `scripts/claude-ctl.sh` | **The control surface.** `claude-ctl` (on PATH via `~/.local/bin`) shows versions, which build is running, which main-process patches are applied, patch freshness, session sharing, and every power/lock inhibitor KDE currently holds. Also acts: `patch`, `update`, `share`/`unshare`, `quit`, `json`, `page` |
-| `scripts/render-dashboard.py` | Renders `claude-ctl json` into a self-contained `dashboard.html` (no server, no network, light+dark). Separate file, not a heredoc, precisely because of the heredoc hazard below |
-| `scripts/install-autoupdate.sh` | systemd **--user** timer that runs `claude-ctl update` every 2h. Never passes `--force`, so it does nothing while the app is running - it acts in the window after you quit. `--status` / `--remove` |
-| `scripts/share-sessions.sh` | Points the official build's Code-tab session index at the patched profile's, so both show the same sessions. Only `claude-code-sessions/` is linked - transcripts are already shared. `--undo` reverses it |
-| `scripts/check-updates.sh` | Background update check: official build vs the apt index, the patched build vs the AUR, and whether the deployed asar is stale relative to `custom-ui/`. `--report` prints the last result offline. Reports only - never installs. Run at session start by the hook in `.claude/settings.json` |
-| `scripts/update-appimage.sh` | Updates the AUR package + re-extracts + re-patches in one go (calls `update-ui.sh`) |
-| `scripts/install-official.sh` | Installs/updates Anthropic's **official** Linux app into `~/.local/lib/claude-desktop-official` on an isolated profile, side by side with the patched build. Does not touch it. |
-| `scripts/claude-quit.sh` | Kill all Claude processes |
-| `memory/architecture.md` | Patching stack, titlebar, preload sandbox, IPC details |
-| `memory/features.md` | Feature status (implemented / partial / not yet) |
-| `memory/debugging.md` | Console markers, log files, localStorage state, constraints |
-| `memory/design-decisions.md` | Whitelist guards, absolute timestamps, DOM scanner patterns |
-| `memory/maintenance.md` | Deploy workflow, folder renames, AppImage upgrades |
-| `memory/issues-fixed.md` | Bug history (50 entries), each with symptom, root cause, fix and the lesson |
-| `USAGE.md` | The operator's page: `claude-ctl`, the autoupdate timer, the patch loop, session sharing, and where to look when something breaks |
-| `memory/todo-archive.md` | Detail trimmed out of `TODO.md` when items were shortened. Not read unless a short item needs unpacking |
-| `memory/changelog.md` | Dated, append-only record of what shipped, in order. Post-mortems stay in `issues-fixed.md` |
-| `memory/perf-security.md` | Security and performance review |
-| `docs/review-2026-08.md` | Fleet review 2026-08-26: patch brittleness vs upstream, the stranded untrack commit / unpushed-bundle risk, update-path verdict, convention drift |
-
-`memory/` stays flat past the usual ~8-file threshold on purpose: half of it is harness-owned auto-memory (`MEMORY.md` plus the `project_*.md` atoms it indexes with relative links, symlinked in from `~/.claude/projects/`), which cannot be moved into subfolders without breaking that index. The eight hand-written docs above are the only part that is ours to group, and eight is the threshold, not past it.
+File map: [INDEX.md](INDEX.md) (one per folder).
 
 ---
 
