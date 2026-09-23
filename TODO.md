@@ -6,8 +6,8 @@ How to run things: [USAGE.md](USAGE.md). Trimmed detail: [memory/todo-archive.md
 
 ## ⚡ Next up
 
-- [ ] 🤖 **Release the project switcher as open source** `L` `think` - plan and phases in
-      [docs/open-source-release.md](docs/open-source-release.md); marketing is a later session.
+- [ ] 🤖 **Release the project switcher as open source** `L` - moved to
+      `../Claude Project Switcher 🗂️/` (plan in its `docs/plan.md`); this folder stays the private source.
 
 - [ ] 🤖 **Find a new base for the patched build** `L` `think` - its AUR package is gone, so it
       can no longer update at all. [memory/maintenance.md](memory/maintenance.md) compares the
