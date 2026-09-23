@@ -14,7 +14,6 @@ staleness warning.
 | **Workspace folder click** | Arms path via `ccBridge.armFolder(path)`; patched `browseFolder` in the main bundle returns it without an OS dialog. |
 | **TODO.md previews** | Panel renders each folder's `TODO.md` as markdown on hover; live via `cc-ai-data-v2`, baked fallback via `CC_AI_TODOS`. |
 | **TODO.md editing** (2026-08-18) | Click the rendered text to edit, click away to commit. Textarea occupies the same slot so geometry can't shift. Autosaves through `cc-write-todo-v2`, which only ever writes `TODO.md`, only under `~/Documents/AI Projects`, via temp-file + rename, snapshotting the previous version first. `revert` undoes the whole editing session; `open` reveals the folder. |
-| **Top-bar removal** (2026-08-18) | `custom-ui/chrome.js`. Purely geometric match plus a self-heal that restores the element if visible text collapses. Off with `localStorage['cc-hide-topbar']='0'`. Hands window drag/close to the KDE titlebar and Ctrl+Q. |
 | **Limit-nag dismissal** (2026-08-18) | "Approaching your weekly limit" toasts get their own close button clicked, so the app remembers. Off with `localStorage['cc-hide-limit-nag']='0'`. |
 | **DOM beacon** (2026-08-18) | `custom-ui/diag.js`. The replacement for CDP, which is still blocked. See [debugging.md](debugging.md). |
 | **Ctrl+Q quit** | Clean shutdown via IPC (channel UUID extracted dynamically at patch time - see `memory/maintenance.md`). Preload-level, not in `custom-ui/`. |

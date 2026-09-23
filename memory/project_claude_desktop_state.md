@@ -19,7 +19,7 @@ Key facts:
 - `install-official.sh` replaces the whole prefix, so it re-applies the custom UI itself and fails loudly if it cannot
 - `custom-ui.js` is built from modules in `custom-ui/` by `scripts/update-ui.sh`; run things via [[USAGE]]
 - `update-ui.sh` embeds the combined JS into `mainView.js` inside the asar
-- The top-bar hider is back as `custom-ui/chrome.js`, matching on geometry only and self-healing if hiding collapses the page's visible text; see [[issues-fixed]] #18 for why a guessed selector is never acceptable here
+- The top-bar hider (`custom-ui/chrome.js`) was removed 2026-09-23: the native top bar looks right on its own now, no reclaiming needed
 - The renderer knows only the route. Anything about *which session this is* - project folder, title, model, token count - comes from the `cc-session-info` IPC reading the app's own session record under `<userData>/claude-code-sessions/`, plus the transcript at `~/.claude/projects/<slug>/<cliSessionId>.jsonl`. See [[issues-fixed]] #50 and `custom-ui/session.js`
 - The app names a sidebar project group after its git remote when the folder has one (`label:project-owner/repo`), not after the folder. That is why five folders lost their emoji; `custom-ui/labels.js` puts it back
 - Sidebar DOM (dframe): chat rows are `<div data-row>` + `<button data-row-main-button>`; no chat ID in DOM; key on chat title from "More options" aria-label; active chat has `data-selected`

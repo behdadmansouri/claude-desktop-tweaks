@@ -20,7 +20,6 @@ function scan() {
   // 2s is the right cadence for a toast: fast enough that it barely registers,
   // slow enough not to be a hot loop.
   try { dismissLimitNags(); } catch (_) {}
-  try { applyTopbar(); } catch (_) {}
   // Cheap and idempotent: it only writes when a label is missing its glyph, so
   // riding the existing scan costs nothing and needs no second observer.
   try { applyProjectLabels(); } catch (_) {}
@@ -48,7 +47,6 @@ function bootstrap() {
   // one IIFE scope, so an exception here would otherwise take the project panel
   // down with it.
   try { installUsage(); } catch (e) { console.error('[cc-usage] install failed', e); }
-  try { installChrome(); } catch (e) { console.error('[cc-chrome] install failed', e); }
   try { dgBootstrap(); } catch (e) { console.error('[cc-dump] install failed', e); }
   new MutationObserver(debouncedScan)
     .observe(document.documentElement, {childList: true, subtree: true});

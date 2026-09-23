@@ -35,8 +35,6 @@ echo "→ Building custom-ui.js from modules..."
   printf '\n'
   cat "$MODULES_DIR/usage.js"
   printf '\n'
-  cat "$MODULES_DIR/chrome.js"
-  printf '\n'
   cat "$MODULES_DIR/diag.js"
   printf '\n'
   cat "$MODULES_DIR/titlewatch.js"
