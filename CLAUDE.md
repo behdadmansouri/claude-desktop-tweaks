@@ -1,5 +1,9 @@
 # Claude Desktop -- Custom UI Patches
 
+> **ARCHIVED 2026-09-23.** Superseded by `../../Claude Project Switcher 🗂️/` (the open-source
+> switcher). Nothing is developed here; this folder is history. `~/.local/bin/claude-quit` and
+> `refresh-folders` no longer point here.
+
 Patches for the Claude Desktop Electron app via preload injection.
 
 **Role since 2026-09-23: this is the private TWEAKS project.** The project switcher panel is being
